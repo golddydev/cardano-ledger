@@ -1,0 +1,141 @@
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                     Cardano VRF Seed Construction (mkSeed)                    ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+INPUTS:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. Universal Constant (uc_nonce):                                          │
+│    ┌──────────────┐    ┌──────────────┐                                    │
+│    │  seedEta (0) │    │  seedL (1)   │    or    NeutralNonce             │
+│    │ [32 bytes]   │    │ [32 bytes]   │                                    │
+│    └──────────────┘    └──────────────┘                                    │
+│                                                                             │
+│ 2. Slot Number (slot):                                                     │
+│    ┌──────────────────┐                                                    │
+│    │   432000 (u64)   │                                                    │
+│    └──────────────────┘                                                    │
+│                                                                             │
+│ 3. Epoch Nonce (e_nonce):                                                  │
+│    ┌────────────────────────────────────┐                                  │
+│    │  Nonce Hash (32 bytes)             │    or    NeutralNonce           │
+│    └────────────────────────────────────┘                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+ALGORITHM:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  Step 1: BUILD BYTE BUFFER                                                 │
+│  ┌───────────────────────────────────────────────────────────┐            │
+│  │                                                             │            │
+│  │  Slot Number (8 bytes, big-endian)                         │            │
+│  │  ┌────────────────────────┐                                │            │
+│  │  │ 0x00 0x00 0x00 0x00    │                                │            │
+│  │  │ 0x00 0x06 0x98 0x40    │ ← 432000 in big-endian        │            │
+│  │  └────────────────────────┘                                │            │
+│  │                                                             │            │
+│  │  Epoch Nonce Hash (0 or 32 bytes)                          │            │
+│  │  ┌─────────────────────────────────────────────┐          │            │
+│  │  │ 0xAB 0xCD ... (32 bytes if not neutral)    │          │            │
+│  │  └─────────────────────────────────────────────┘          │            │
+│  │                                                             │            │
+│  └───────────────────────────────────────────────────────────┘            │
+│         │                                                                   │
+│         │ Total size: 8 bytes (neutral) or 40 bytes (with epoch nonce)    │
+│         ▼                                                                   │
+│  Step 2: HASH WITH BLAKE2B_256                                             │
+│  ┌───────────────────────────────────────────────────────────┐            │
+│  │                    Blake2b_256                              │            │
+│  │  ┌─────────────────────────────────────────────────────┐  │            │
+│  │  │  Intermediate Hash (32 bytes)                       │  │            │
+│  │  │  0x12 0x34 0x56 ... (32 bytes)                      │  │            │
+│  │  └─────────────────────────────────────────────────────┘  │            │
+│  └───────────────────────────────────────────────────────────┘            │
+│         │                                                                   │
+│         ▼                                                                   │
+│  Step 3: XOR WITH UNIVERSAL CONSTANT (if not neutral)                      │
+│  ┌───────────────────────────────────────────────────────────┐            │
+│  │                                                             │            │
+│  │  Intermediate Hash    ⊕    Universal Constant              │            │
+│  │  [32 bytes]                 [32 bytes or skip]             │            │
+│  │                                                             │            │
+│  │  Result: Final Hash [32 bytes]                             │            │
+│  │                                                             │            │
+│  └───────────────────────────────────────────────────────────┘            │
+│         │                                                                   │
+│         ▼                                                                   │
+│  Step 4: WRAP IN SEED TYPE                                                 │
+│  ┌───────────────────────────────────────────────────────────┐            │
+│  │                    Seed(final_hash)                         │            │
+│  │  Ready for VRF computation!                                 │            │
+│  └───────────────────────────────────────────────────────────┘            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+OUTPUT:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Seed: [32 bytes Blake2b_256 hash]                                         │
+│  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  │ 0x1F 0x2E 0x3D 0x4C 0x5B 0x6A 0x79 0x88 0x97 0xA6 0xB5 0xC4 0xD3 ...  │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+TWO MAIN USE CASES:
+═══════════════════════════════════════════════════════════════════════════════
+
+┌────────────────────────────────────────┬────────────────────────────────────┐
+│  1. LEADER ELECTION                    │  2. RANDOMNESS GENERATION          │
+├────────────────────────────────────────┼────────────────────────────────────┤
+│  Universal Constant: seedL (1)         │  Universal Constant: seedEta (0)   │
+│  Purpose: Determine slot leader       │  Purpose: Update epoch nonce       │
+│                                        │                                    │
+│  Process:                              │  Process:                          │
+│  ┌──────────────────────────────────┐ │  ┌──────────────────────────────┐ │
+│  │ 1. Construct seed with seedL     │ │  │ 1. Construct seed with eta   │ │
+│  │ 2. Compute VRF proof             │ │  │ 2. Compute VRF output        │ │
+│  │ 3. Check: VRF_output < threshold │ │  │ 3. Mix into evolving nonce   │ │
+│  │ 4. If yes, produce block!        │ │  │ 4. Finalize at epoch end     │ │
+│  └──────────────────────────────────┘ │  └──────────────────────────────┘ │
+│                                        │                                    │
+│  Used by: Stake pools every slot      │  Used by: Every block in epoch     │
+└────────────────────────────────────────┴────────────────────────────────────┘
+
+DOMAIN SEPARATION:
+═══════════════════════════════════════════════════════════════════════════════
+
+Same slot (432000) + Same epoch nonce (N) but different universal constants:
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  seedEta ⊕ slot ⊕ N  ==>  Seed_A  (for randomness)                         │
+│  seedL   ⊕ slot ⊕ N  ==>  Seed_B  (for leader election)                    │
+│                                                                             │
+│  Seed_A ≠ Seed_B  (guaranteed by XOR with different constants)             │
+│                                                                             │
+│  Security: Cannot reuse VRF proof from one domain in another!              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+EXAMPLE FLOW (LEADER ELECTION):
+═══════════════════════════════════════════════════════════════════════════════
+
+Slot 432000, Epoch 1, Pool trying to lead:
+
+  1. Get epoch nonce: N₁ = hash from previous epoch
+  
+  2. Construct seed:
+     seed = mkSeed(seedL, 432000, N₁)
+     
+  3. Compute VRF:
+     (proof, output) = VRF_prove(pool_vrf_key, seed)
+     
+  4. Check leadership:
+     threshold = calculate_threshold(pool_stake, total_stake, active_slot_coeff)
+     if output < threshold:
+         LEADER! Create block with proof
+     else:
+         Not leader this slot
+         
+  5. Block includes VRF proof for verification by other nodes
+
+═══════════════════════════════════════════════════════════════════════════════
+
+
+
