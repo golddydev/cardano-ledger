@@ -183,7 +183,7 @@ MIR stands for "Move Instantaneous Reserves". This handles special treasury oper
 
 **How MIR Works**:
 
-1. **During Epoch N-1**:
+1. **During Epoch N-1** (Certificate Submission via DELEG rule):
    - Governance submits MIRCert certificates in transactions
    - These must be submitted before the stability window (to prevent last-minute manipulation)
    - Each MIRCert updates the `dsIRewards` (InstantaneousRewards) in the DState
@@ -191,18 +191,189 @@ MIR stands for "Move Instantaneous Reserves". This handles special treasury oper
      - `StakeAddressesMIR`: Pay specific amounts to specific stake accounts
      - `SendToOppositePotMIR`: Transfer ADA from reserves to treasury (or vice versa)
 
-2. **At Epoch Boundary (N-1 → N)**:
-   - MIR rule reads the accumulated `dsIRewards` from DState
+2. **At Epoch Boundary (N-1 → N)** (MIR Rule Execution):
+
+   **File**: [`Mir.hs:94-158`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Mir.hs:94)
+
+   The MIR rule is triggered by NEWEPOCH at the epoch boundary ([`NewEpoch.hs:167`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/NewEpoch.hs:167)):
+   ```haskell
+   es'' <- trans @(EraRule "MIR" era) $ TRC ((), es', ())
+   ```
+
+   **Haskell Implementation** (`mirTransition`):
+   ```haskell
+   mirTransition = do
+     TRC (_, es@EpochState { esChainAccountState = chainAccountState, ... }, ()) <- judgmentContext
+     let ds = dpState ^. certDStateL
+         reserves = casReserves chainAccountState
+         treasury = casTreasury chainAccountState
+         -- Get pending MIR rewards, but ONLY for accounts that still exist
+         irwdR = iRReserves (dsIRewards ds) `Map.intersection` accountsMap
+         irwdT = iRTreasury (dsIRewards ds) `Map.intersection` accountsMap
+         totR = fold irwdR  -- Total to pay from reserves
+         totT = fold irwdT  -- Total to pay from treasury
+         -- Account for any pot-to-pot transfers (delta adjustments)
+         availableReserves = reserves `addDeltaCoin` deltaReserves (dsIRewards ds)
+         availableTreasury = treasury `addDeltaCoin` deltaTreasury (dsIRewards ds)
+         -- Combined update map for all accounts
+         update = Map.unionWith (<>) irwdR irwdT
+
+     if totR <= availableReserves && totT <= availableTreasury
+       then do
+         -- SUCCESS: Sufficient funds exist
+         tellEvent $ MirTransfer (...)
+         pure $ EpochState
+           ChainAccountState
+             { casReserves = availableReserves <-> totR  -- Deduct from reserves
+             , casTreasury = availableTreasury <-> totT  -- Deduct from treasury
+             }
+           ( ls
+               -- Add rewards to stake accounts
+               & lsCertStateL . certDStateL . accountsL
+                 %~ addToBalanceAccounts (Map.map compactCoinOrError update)
+               -- Clear the pending MIR rewards
+               & lsCertStateL . certDStateL . dsIRewardsL .~ emptyInstantaneousRewards
+           )
+           ...
+       else do
+         -- FAILURE: Insufficient funds - just clear without transfer
+         tellEvent $ NoMirTransfer (...) availableReserves availableTreasury
+         pure $ EpochState
+           chainAccountState  -- Unchanged
+           ( ls
+               -- Still clear the pending rewards (no transfer happens)
+               & lsCertStateL . certDStateL . dsIRewardsL .~ emptyInstantaneousRewards
+           )
+           ...
+   ```
+
+   **Key Operations at Epoch Boundary**:
+   - Reads the accumulated `dsIRewards` from DState
+   - Filters to only include accounts that still exist (`Map.intersection accountsMap`)
    - Checks if sufficient funds exist in reserves/treasury
-   - If yes:
-     - Transfers ADA from reserves/treasury to specified stake accounts
-     - Transfers ADA between reserves and treasury if requested
-     - Clears `dsIRewards` (resets to empty)
-   - If no (insufficient funds):
+   - If sufficient funds:
+     - Transfers ADA from reserves/treasury to specified stake accounts via `addToBalanceAccounts`
+     - Updates `casReserves` and `casTreasury` to reflect the withdrawals
+     - Clears `dsIRewards` (resets to `emptyInstantaneousRewards`)
+     - Emits `MirTransfer` event
+   - If insufficient funds:
      - Just clears `dsIRewards` without making transfers
-     - Emits `NoMirTransfer` event
+     - Emits `NoMirTransfer` event with available amounts
 
 **Key Constraint**: MIR certificates can only be submitted during the first part of an epoch (before the stability window ends), enforced by the `checkSlotNotTooLate` function in the DELEG rule.
+
+#### The `checkSlotNotTooLate` Function
+
+**File**: [`Deleg.hs:380-397`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Deleg.hs:380)
+
+This function enforces the critical timing constraint that prevents MIR certificates from being submitted too close to the epoch boundary.
+
+**Haskell Implementation**:
+
+```haskell
+checkSlotNotTooLate ::
+  ( EraCertState era
+  , ShelleyEraAccounts era
+  , ShelleyEraTxCert era
+  , EraPParams era
+  , AtMostEra "Babbage" era
+  ) =>
+  SlotNo ->
+  EpochNo ->
+  Rule (ShelleyDELEG era) 'Transition ()
+checkSlotNotTooLate slot curEpochNo = do
+  sp <- liftSTS $ asks stabilityWindow
+  ei <- liftSTS $ asks epochInfoPure
+  let firstSlot = epochInfoFirst ei newEpoch
+      tooLate = firstSlot *- Duration sp
+      newEpoch = addEpochInterval curEpochNo (EpochInterval 1)
+  tellEvent (DelegNewEpoch newEpoch)
+  slot < tooLate ?! MIRCertificateTooLateinEpochDELEG (Mismatch slot tooLate)
+```
+
+**Step-by-Step Breakdown**:
+
+1. **Get the Stability Window** (`sp <- liftSTS $ asks stabilityWindow`):
+   - The stability window is a global parameter representing slots before epoch boundary where chain is considered "stable"
+   - On mainnet: approximately 3,600 slots (~1 hour)
+   - Computed from security parameter `k` and active slot coefficient `f`: `stabilityWindow = 3k/f`
+
+2. **Get Epoch Info** (`ei <- liftSTS $ asks epochInfoPure`):
+   - Retrieves epoch information structure for slot/epoch conversions
+
+3. **Calculate Next Epoch's First Slot**:
+   ```haskell
+   newEpoch = addEpochInterval curEpochNo (EpochInterval 1)  -- next epoch
+   firstSlot = epochInfoFirst ei newEpoch                     -- first slot of next epoch
+   ```
+
+4. **Calculate the "Too Late" Threshold**:
+   ```haskell
+   tooLate = firstSlot *- Duration sp
+   ```
+   The `*-` operator subtracts a duration from a slot (from [`Slot.hs:56-57`](libs/cardano-ledger-core/src/Cardano/Ledger/Slot.hs:56)):
+   ```haskell
+   (*-) :: SlotNo -> Duration -> SlotNo
+   (SlotNo s) *- (Duration d) = SlotNo (if s > d then s - d else 0)
+   ```
+   So `tooLate` = first slot of next epoch - stability window
+
+5. **Enforce the Constraint**:
+   ```haskell
+   slot < tooLate ?! MIRCertificateTooLateinEpochDELEG (Mismatch slot tooLate)
+   ```
+   If current slot ≥ `tooLate`, the transaction fails with `MIRCertificateTooLateinEpochDELEG`
+
+**Visual Timeline**:
+
+```
+Epoch N:
+├─ Slot 0 ────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  [═══════════════════════ SAFE ZONE ═══════════════════]  [══ FORBIDDEN ══] │
+│                                                           ↑                  │
+│                                                    tooLate slot              │
+│                                             (firstSlotNextEpoch - sp)        │
+├──────────────────────────────────────────────────────────────────────────────┤
+                                                            │← sp slots →│
+                                                                               │
+Epoch N+1:                                                                     ↓
+├─ Slot 0 ─────────────────────────────────────────────────────────────────────┤
+```
+
+**Mainnet Example** (with actual values):
+- Current epoch: 300
+- Epoch length: 432,000 slots (5 days)
+- Stability window (`sp`): ~3,600 slots (~1 hour)
+- First slot of epoch 301: 130,032,000
+- `tooLate` = 130,032,000 - 3,600 = **130,028,400**
+- MIR certificates submitted at slot ≥ 130,028,400 in epoch 300 will be **rejected**
+
+**Why This Constraint Exists**:
+
+1. **Consensus Stability**: The stability window represents time needed for chain consensus to be "settled". Within this window, chain rollbacks are theoretically possible (up to k blocks). If a MIR certificate were included in a block that gets rolled back near the epoch boundary, the ledger state at the boundary could be inconsistent.
+
+2. **Predictable Epoch Boundary Processing**: MIR certificates are "IOUs" settled at epoch boundaries. The system needs to know the complete set of pending MIRs well before the epoch ends to:
+   - Calculate total amounts to be moved from reserves/treasury
+   - Ensure sufficient funds exist
+   - Update stake addresses with their rewards
+
+3. **Preventing Gaming**: Without this constraint, a malicious actor could try to submit MIR certificates very late in an epoch, exploit timing differences between nodes, and cause chain forks.
+
+**Error Type** ([`Deleg.hs:108-109`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Deleg.hs:108)):
+
+```haskell
+| MIRCertificateTooLateinEpochDELEG
+    (Mismatch RelLT SlotNo)
+```
+
+The `Mismatch` provides:
+- `mismatchSupplied`: The actual slot of the transaction
+- `mismatchExpected`: The `tooLate` threshold that should NOT have been reached
+
+**Era Constraint** (`AtMostEra "Babbage"`):
+
+This function only applies through the Babbage era. In **Conway era**, MIR certificates are **deprecated** and replaced by governance actions, so this timing constraint no longer applies to MIRs.
 
 **Example Timeline**:
 ```
@@ -1219,11 +1390,18 @@ Slot:                    432,000                         432,000
    - Point of no return: Future parameters solidified
    - Forced completion: Rewards guaranteed ready
 
-8. **Everything coordinates** around epoch boundaries
+8. **MIR certificates have timing constraints** (Shelley through Babbage)
+   - Must be submitted before stability window ends
+   - Enforced by `checkSlotNotTooLate` function
+   - Prevents manipulation near epoch boundaries
+   - Deprecated in Conway era (replaced by governance actions)
+
+9. **Everything coordinates** around epoch boundaries
    - Snapshots rotated
    - Rewards applied
    - Pools retired
    - Parameters updated
+   - MIR transfers executed
    - All in synchronized sequence
 
 ---
@@ -1241,10 +1419,13 @@ For deeper understanding, refer to these files:
 | POOLREAP | [`PoolReap.hs`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/PoolReap.hs) | [`poolReapTransition:134`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/PoolReap.hs:134) |
 | POOL | [`Pool.hs`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Pool.hs) | [`poolDelegationTransition:215`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Pool.hs:215) |
 | RUPD | [`Rupd.hs`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Rupd.hs) | [`rupdTransition:118`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Rupd.hs:118), [`determineRewardTiming:112`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Rupd.hs:112), [`RewardTiming:109`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Rupd.hs:109) |
-| MIR | [`Mir.hs`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Mir.hs) | Move Instantaneous Reserves transitions |
+| DELEG | [`Deleg.hs`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Deleg.hs) | [`delegationTransition:248`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Deleg.hs:248), [`checkSlotNotTooLate:380`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Deleg.hs:380), [`MIRCertificateTooLateinEpochDELEG:108`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Deleg.hs:108) |
+| MIR | [`Mir.hs`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Mir.hs) | [`mirTransition:94`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Mir.hs:94), [`ShelleyMirEvent:56`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Mir.hs:56), [`emptyInstantaneousRewards:160`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Mir.hs:160) |
 | UPEC | [`Upec.hs`](eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Upec.hs) | Protocol parameter update activation |
 | State Types | [`LedgerState/Types.hs`](eras/shelley/impl/src/Cardano/Ledger/Shelley/LedgerState/Types.hs) | [`NewEpochState:309`](eras/shelley/impl/src/Cardano/Ledger/Shelley/LedgerState/Types.hs:309), [`EpochState:67`](eras/shelley/impl/src/Cardano/Ledger/Shelley/LedgerState/Types.hs:67) |
 | Snapshots | [`State/SnapShots.hs`](libs/cardano-ledger-core/src/Cardano/Ledger/State/SnapShots.hs) | [`SnapShots:223`](libs/cardano-ledger-core/src/Cardano/Ledger/State/SnapShots.hs:223) |
+| Slot Arithmetic | [`Slot.hs`](libs/cardano-ledger-core/src/Cardano/Ledger/Slot.hs) | [`Duration:39`](libs/cardano-ledger-core/src/Cardano/Ledger/Slot.hs:39), [`(*-):56`](libs/cardano-ledger-core/src/Cardano/Ledger/Slot.hs:56), [`epochInfoFirst:71`](libs/cardano-ledger-core/src/Cardano/Ledger/Slot.hs:71) |
+| Globals | [`BaseTypes.hs`](libs/cardano-ledger-core/src/Cardano/Ledger/BaseTypes.hs) | [`Globals:711`](libs/cardano-ledger-core/src/Cardano/Ledger/BaseTypes.hs:711), [`stabilityWindow:713`](libs/cardano-ledger-core/src/Cardano/Ledger/BaseTypes.hs:713) |
 
 ---
 
