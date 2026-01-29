@@ -121,6 +121,7 @@
             tools =
               {
                 cabal = "3.14.2.0";
+                cuddle = "latest";
               }
               // lib.optionalAttrs (config.compiler-nix-name == defaultCompiler) {
                 # tools that work only with default compiler
@@ -133,7 +134,7 @@
             # and from nixpkgs or other inputs
             nativeBuildInputs = with nixpkgs;
               [
-                (python3.withPackages (ps: with ps; [sphinx sphinx_rtd_theme recommonmark sphinx-markdown-tables sphinxemoji]))
+                (python3.withPackages (ps: with ps; [sphinx sphinx-rtd-theme recommonmark sphinx-markdown-tables sphinxemoji]))
                 haskellPackages.implicit-hie
                 shellcheck
                 cardano-ledger-release-tool
@@ -181,17 +182,6 @@
               };
             })
             ({pkgs, ...}:
-              lib.mkIf pkgs.stdenv.hostPlatform.isUnix {
-                packages.cardano-ledger-shelley.components.tests.tests.build-tools = [pkgs.cddl pkgs.cbor-diag];
-                packages.cardano-ledger-allegra.components.tests.tests.build-tools = [pkgs.cddl pkgs.cbor-diag];
-                packages.cardano-ledger-mary.components.tests.tests.build-tools = [pkgs.cddl pkgs.cbor-diag];
-                packages.cardano-ledger-alonzo.components.tests.tests.build-tools = [pkgs.cddl pkgs.cbor-diag];
-                packages.cardano-ledger-babbage.components.tests.tests.build-tools = [pkgs.cddl pkgs.cbor-diag];
-                packages.cardano-ledger-conway.components.tests.tests.build-tools = [pkgs.cddl pkgs.cbor-diag];
-                packages.cardano-ledger-dijkstra.components.tests.tests.build-tools = [pkgs.cddl pkgs.cbor-diag];
-                packages.cardano-protocol-tpraos.components.tests.tests.build-tools = [pkgs.cddl pkgs.cbor-diag];
-              })
-            ({pkgs, ...}:
               lib.mkIf pkgs.stdenv.hostPlatform.isWindows {
                 packages.plutus-preprocessor.buildable = lib.mkForce false;
                 packages.cardano-ledger-test.buildable = lib.mkForce false;
@@ -211,7 +201,7 @@
           cabalProject.flake (
             lib.optionalAttrs (system == "x86_64-linux") {
               # on linux, build/test other supported compilers
-              variants = lib.genAttrs ["ghc967" "ghc9121"] (compiler-nix-name: {
+              variants = lib.genAttrs ["ghc967" "ghc9122"] (compiler-nix-name: {
                 inherit compiler-nix-name;
               });
             }
@@ -292,7 +282,7 @@
             };
           in
             mkDevShells cabalProject
-            # Additional shells for every GHC version supported by haskell.nix, eg. `nix develop .#ghc9121`
+            # Additional shells for every GHC version supported by haskell.nix, eg. `nix develop .#ghc9122`
             // lib.mapAttrs (compiler-nix-name: _: let
               p = cabalProject.appendModule {inherit compiler-nix-name;};
             in

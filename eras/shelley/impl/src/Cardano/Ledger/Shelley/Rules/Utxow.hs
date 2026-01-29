@@ -87,6 +87,8 @@ import Control.State.Transition (
   STS (..),
   TRC (..),
   TransitionRule,
+  failureOnNonEmpty,
+  failureOnNonEmptySet,
   judgmentContext,
   liftSTS,
   trans,
@@ -94,11 +96,13 @@ import Control.State.Transition (
   wrapFailed,
  )
 import Data.Foldable (sequenceA_)
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq (filter)
 import qualified Data.Sequence.Strict as StrictSeq
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Set.NonEmpty (NonEmptySet)
 import Data.Typeable (Typeable)
 import Data.Word (Word64, Word8)
 import GHC.Generics (Generic)
@@ -109,15 +113,14 @@ import Validation
 -- =========================================
 
 data ShelleyUtxowPredFailure era
-  = InvalidWitnessesUTXOW
-      [VKey Witness]
+  = InvalidWitnessesUTXOW (NonEmpty (VKey Witness))
   | -- witnesses which failed in verifiedWits function
     MissingVKeyWitnessesUTXOW
-      (Set (KeyHash Witness)) -- witnesses which were needed and not supplied
+      (NonEmptySet (KeyHash Witness)) -- witnesses which were needed and not supplied
   | MissingScriptWitnessesUTXOW
-      (Set ScriptHash) -- missing scripts
+      (NonEmptySet ScriptHash) -- missing scripts
   | ScriptWitnessNotValidatingUTXOW
-      (Set ScriptHash) -- failed scripts
+      (NonEmptySet ScriptHash) -- failed scripts
   | UtxoFailure (PredicateFailure (EraRule "UTXO" era))
   | MIRInsufficientGenesisSigsUTXOW (Set (KeyHash Witness))
   | MissingTxBodyMetadataHash
@@ -129,7 +132,7 @@ data ShelleyUtxowPredFailure era
   | -- Contains out of range values (strings too long)
     InvalidMetadata
   | ExtraneousScriptWitnessesUTXOW
-      (Set ScriptHash) -- extraneous scripts
+      (NonEmptySet ScriptHash) -- extraneous scripts
   deriving (Generic)
 
 type instance EraRuleFailure "UTXOW" ShelleyEra = ShelleyUtxowPredFailure ShelleyEra
@@ -376,8 +379,7 @@ validateFailedNativeScripts (ScriptsProvided scriptsProvided) tx = do
         Map.filter -- we keep around only non-validating native scripts
           (maybe False (not . validateNativeScript tx) . getNativeScript)
           scriptsProvided
-  failureUnless (Map.null failedScripts) $
-    ScriptWitnessNotValidatingUTXOW (Map.keysSet failedScripts)
+  failureOnNonEmptySet (Map.keysSet failedScripts) ScriptWitnessNotValidatingUTXOW
 
 {-  { s | (_,s) ∈ scriptsNeeded utxo tx} = dom(txscripts txw)    -}
 {-  sNeeded := scriptsNeeded utxo tx                             -}
@@ -388,10 +390,8 @@ validateMissingScripts ::
   Test (ShelleyUtxowPredFailure era)
 validateMissingScripts (ShelleyScriptsNeeded sNeeded) scriptsprovided =
   sequenceA_
-    [ failureUnless (sNeeded `Set.isSubsetOf` sProvided) $
-        MissingScriptWitnessesUTXOW (sNeeded `Set.difference` sProvided)
-    , failureUnless (sProvided `Set.isSubsetOf` sNeeded) $
-        ExtraneousScriptWitnessesUTXOW (sProvided `Set.difference` sNeeded)
+    [ failureOnNonEmptySet (sNeeded `Set.difference` sProvided) MissingScriptWitnessesUTXOW
+    , failureOnNonEmptySet (sProvided `Set.difference` sNeeded) ExtraneousScriptWitnessesUTXOW
     ]
   where
     sProvided = Map.keysSet $ unScriptsProvided scriptsprovided
@@ -399,9 +399,7 @@ validateMissingScripts (ShelleyScriptsNeeded sNeeded) scriptsprovided =
 -- | Determine if the UTxO witnesses in a given transaction are correct.
 validateVerifiedWits :: EraTx era => Tx l era -> Test (ShelleyUtxowPredFailure era)
 validateVerifiedWits tx =
-  case failed <> failedBootstrap of
-    [] -> pure ()
-    nonEmpty -> failure $ InvalidWitnessesUTXOW nonEmpty
+  failureOnNonEmpty (failed <> failedBootstrap) InvalidWitnessesUTXOW
   where
     txBody = tx ^. bodyTxL
     txBodyHash = extractHash (hashAnnotated txBody)
@@ -431,8 +429,7 @@ validateNeededWitnesses ::
 validateNeededWitnesses witsKeyHashes certState utxo txBody =
   let needed = getWitsVKeyNeeded certState utxo txBody
       missingWitnesses = Set.difference needed witsKeyHashes
-   in failureUnless (Set.null missingWitnesses) $
-        MissingVKeyWitnessesUTXOW missingWitnesses
+   in failureOnNonEmptySet missingWitnesses MissingVKeyWitnessesUTXOW
 
 -- | check metadata hash
 --   ((adh = ◇) ∧ (ad= ◇)) ∨ (adh = hashAD ad)

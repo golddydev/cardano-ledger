@@ -16,9 +16,10 @@ module Cardano.Ledger.Dijkstra.TxCert (
   DijkstraTxCertUpgradeError,
   DijkstraTxCert (..),
   DijkstraDelegCert (..),
+  dijkstraToConwayDelegCert,
 ) where
 
-import Cardano.Ledger.BaseTypes (kindObject)
+import Cardano.Ledger.BaseTypes (StrictMaybe (..), kindObject)
 import Cardano.Ledger.Binary (
   DecCBOR (..),
   EncCBOR (..),
@@ -49,12 +50,12 @@ import Cardano.Ledger.Conway.Core (
   pattern UpdateDRepTxCert,
  )
 import Cardano.Ledger.Conway.TxCert (
+  ConwayDelegCert (..),
   ConwayEraTxCert (..),
   ConwayGovCert (..),
   Delegatee (..),
   conwayGovCertVKeyWitness,
   conwayTotalDepositsTxCerts,
-  conwayTotalRefundsTxCerts,
   conwayTxCertDelegDecoder,
  )
 import Cardano.Ledger.Core (
@@ -77,9 +78,10 @@ import Cardano.Ledger.Shelley.TxCert (
   encodeShelleyDelegCert,
   poolTxCertDecoder,
  )
-import Cardano.Ledger.Val (Val)
+import Cardano.Ledger.Val (Val (..))
 import Control.DeepSeq (NFData)
 import Data.Aeson (KeyValue ((.=)), ToJSON (..))
+import Data.Foldable (Foldable (..))
 import GHC.Generics (Generic)
 import NoThunks.Class (NoThunks)
 
@@ -223,6 +225,18 @@ instance Era era => EncCBOR (DijkstraTxCert era) where
     DijkstraTxCertPool poolCert -> encodePoolCert poolCert
     DijkstraTxCertGov govCert -> encCBOR govCert
 
+-- | Unlike previous eras, we no longer need to lookup refunds from the ledger state, since all of the certificates specify the actual refund and ledger rules will validate that they are accurate.
+dijkstraTotalRefundsTxCerts ::
+  ( Foldable f
+  , ConwayEraTxCert era
+  ) =>
+  f (TxCert era) ->
+  Coin
+dijkstraTotalRefundsTxCerts = foldMap' $ \case
+  UnRegDepositTxCert _ deposit -> deposit
+  UnRegDRepTxCert _ deposit -> deposit
+  _ -> zero
+
 instance EraTxCert DijkstraEra where
   type TxCert DijkstraEra = DijkstraTxCert DijkstraEra
 
@@ -268,7 +282,7 @@ instance EraTxCert DijkstraEra where
     UnRegDepositTxCert c _ -> Just c
     _ -> Nothing
 
-  getTotalRefundsTxCerts = conwayTotalRefundsTxCerts
+  getTotalRefundsTxCerts _ _ _ = dijkstraTotalRefundsTxCerts
 
   getTotalDepositsTxCerts = conwayTotalDepositsTxCerts
 
@@ -344,3 +358,10 @@ instance ConwayEraTxCert DijkstraEra where
   getUpdateDRepTxCert = \case
     DijkstraTxCertGov (ConwayUpdateDRep cred mAnchor) -> Just (cred, mAnchor)
     _ -> Nothing
+
+dijkstraToConwayDelegCert :: DijkstraDelegCert -> ConwayDelegCert
+dijkstraToConwayDelegCert = \case
+  DijkstraRegCert cred deposit -> ConwayRegCert cred (SJust deposit)
+  DijkstraUnRegCert cred deposit -> ConwayUnRegCert cred (SJust deposit)
+  DijkstraDelegCert cred d -> ConwayDelegCert cred d
+  DijkstraRegDelegCert sc d deposit -> ConwayRegDelegCert sc d deposit

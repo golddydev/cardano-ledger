@@ -86,6 +86,7 @@ library
     containers,
     data-default,
     deepseq,
+    mempack,
     microlens,
     mtl,
     nothunks,
@@ -117,7 +118,6 @@ test-suite cardano-ledger-shelley-test
     Test.Cardano.Ledger.Shelley.Examples.PoolReReg
     Test.Cardano.Ledger.Shelley.Examples.TwoPools
     Test.Cardano.Ledger.Shelley.Examples.Updates
-    Test.Cardano.Ledger.Shelley.Fees
     Test.Cardano.Ledger.Shelley.MultiSigExamples
     Test.Cardano.Ledger.Shelley.RulesTests
     Test.Cardano.Ledger.Shelley.SafeHash
@@ -165,11 +165,13 @@ test-suite cardano-ledger-shelley-test
     deepseq,
     groups,
     iproute,
+    mempack,
     microlens,
     prettyprinter,
     scientific,
     small-steps:{small-steps, testlib} >=1.1,
     time,
+    vector-map,
 
 benchmark mainbench
   type: exitcode-stdio-1.0

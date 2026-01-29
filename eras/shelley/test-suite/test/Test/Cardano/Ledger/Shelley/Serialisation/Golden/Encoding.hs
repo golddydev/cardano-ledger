@@ -18,7 +18,6 @@ import Cardano.Crypto.DSIGN (SignedDSIGN)
 import qualified Cardano.Crypto.Hash as Hash
 import Cardano.Crypto.KES (SignedKES, unsoundPureSignedKES)
 import Cardano.Crypto.VRF (CertifiedVRF)
-import Cardano.Ledger.Address (Addr (..), RewardAccount (..))
 import Cardano.Ledger.BaseTypes (
   BoundedRational (..),
   EpochInterval (..),
@@ -60,7 +59,7 @@ import Cardano.Ledger.Binary.Crypto (
  )
 import qualified Cardano.Ledger.Binary.Plain as Plain
 import Cardano.Ledger.Block (Block (..))
-import Cardano.Ledger.Coin (Coin (..), DeltaCoin (..))
+import Cardano.Ledger.Coin (Coin (..), CompactForm (CompactCoin), DeltaCoin (..))
 import Cardano.Ledger.Credential (Credential (..), StakeReference (..))
 import Cardano.Ledger.Keys (
   DSIGN,
@@ -121,12 +120,12 @@ import qualified Codec.CBOR.Encoding as CBOR (Encoding (..))
 import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base16 as B16
-import qualified Data.ByteString.Char8 as BS (pack)
 import qualified Data.ByteString.Lazy as BSL (ByteString)
 import Data.Coerce (coerce)
 import Data.IP (toIPv4)
 import qualified Data.Map.Strict as Map
 import qualified Data.Maybe as Maybe (fromJust)
+import Data.MemPack.Buffer (byteArrayFromShortByteString)
 import Data.Ratio ((%))
 import qualified Data.Sequence.Strict as StrictSeq
 import qualified Data.Set as Set
@@ -451,7 +450,7 @@ tests =
             <> S testScript
         )
     , -- checkEncodingCBOR "withdrawal_key"
-      let r = RewardAccount Testnet testStakeCred
+      let r = AccountAddress Testnet (AccountId testStakeCred)
        in checkEncodingCBOR
             shelleyProtVer
             "withdrawal"
@@ -462,7 +461,7 @@ tests =
             )
     , -- checkEncodingCBOR "withdrawal_script"
       --
-      let r = RewardAccount Testnet (ScriptHashObj testScriptHash)
+      let r = AccountAddress Testnet (AccountId (ScriptHashObj testScriptHash))
        in checkEncodingCBOR
             shelleyProtVer
             "withdrawal"
@@ -501,11 +500,11 @@ tests =
     , -- checkEncodingCBOR "register-pool"
       let poolOwner = testKeyHash2
           poolMargin = unsafeBoundRational 0.7
-          poolRAcnt = RewardAccount Testnet testStakeCred
+          poolAccountAddress = AccountAddress Testnet (AccountId testStakeCred)
           poolPledge = Coin 11
           poolCost = Coin 55
           poolUrl = "pool.io"
-          poolMDHash = BS.pack "{}"
+          poolMDHash = byteArrayFromShortByteString "{}"
           ipv4 = toIPv4 [127, 0, 0, 1]
           ipv4Bytes = ipv4ToBytes . toIPv4 $ [127, 0, 0, 1]
           poolRelays =
@@ -526,7 +525,7 @@ tests =
                     , sppPledge = poolPledge
                     , sppCost = poolCost
                     , sppMargin = poolMargin
-                    , sppRewardAccount = poolRAcnt
+                    , sppAccountAddress = poolAccountAddress
                     , sppOwners = Set.singleton poolOwner
                     , sppRelays = poolRelays
                     , sppMetadata =
@@ -545,7 +544,7 @@ tests =
                 <> S poolPledge -- pledge
                 <> S poolCost -- cost
                 <> S poolMargin -- margin
-                <> S poolRAcnt -- reward acct
+                <> S poolAccountAddress -- reward acct
                 <> T (TkListLen 1)
                 <> S poolOwner -- owners
                 <> T (TkListLen 3) -- relays
@@ -604,7 +603,7 @@ tests =
         (emptyPParamsUpdate @ShelleyEra & ppuKeyDepositL .~ SJust (Coin 5))
         ((T $ TkMapLen 1 . TkWord 5) <> S (Coin 5))
     , -- checkEncodingCBOR "pparams_update_all"
-      let minfeea = Coin 0
+      let minfeea = CompactCoin 0
           minfeeb = Coin 1
           maxbbsize = 2
           maxtxsize = 3
@@ -625,8 +624,8 @@ tests =
             shelleyProtVer
             "pparams_update_all"
             ( emptyPParamsUpdate @ShelleyEra
-                & ppuMinFeeAL .~ SJust minfeea
-                & ppuMinFeeBL .~ SJust minfeeb
+                & ppuTxFeePerByteL .~ SJust (CoinPerByte minfeea)
+                & ppuTxFeeFixedL .~ SJust minfeeb
                 & ppuMaxBBSizeL .~ SJust maxbbsize
                 & ppuMaxTxSizeL .~ SJust maxtxsize
                 & ppuMaxBHSizeL .~ SJust maxbhsize
@@ -724,7 +723,7 @@ tests =
             )
     , -- checkEncodingCBOR "transaction_mixed"
       let tout = ShelleyTxOut @ShelleyEra testAddrE (Coin 2)
-          ra = RewardAccount Testnet (KeyHashObj testKeyHash2)
+          ra = AccountAddress Testnet (AccountId (KeyHashObj testKeyHash2))
           ras = Map.singleton ra (Coin 123)
           up =
             Update
@@ -765,7 +764,7 @@ tests =
     , -- checkEncodingCBOR "full_txn_body"
       let tout = ShelleyTxOut @ShelleyEra testAddrE (Coin 2)
           reg = RegTxCert testStakeCred
-          ra = RewardAccount Testnet (KeyHashObj testKeyHash2)
+          ra = AccountAddress Testnet (AccountId (KeyHashObj testKeyHash2))
           ras = Map.singleton ra (Coin 123)
           up =
             Update
@@ -1090,10 +1089,10 @@ tests =
               , "4abc410d6a577e9441ad8ed9663931906e4d43ece8f82c712b1d0235affb06000a1903e80185a0a0"
               , "91000000190800000000001864d81e820001d81e820001d81e820001d81e82000181008202000100"
               , "91000000190800000000001864d81e820001d81e820001d81e820001d81e82000181008202000000"
-              , "810082a0a0008483a0a0a083a0a0a083a0a0a00082a000818300880082020082a000000000a0a084"
-              , "0185a08000820200a0a082a0a082a1581ce0a714319812c3f773ba04ec5d6b3ffcd5aad85006805b"
-              , "047b08254183820101015820c5e21ab1c9f6022d81c3b25e3436cb7f1df77f9652ae3e1310c28e62"
-              , "1dd87b4c01a0"
+              , "810082a0a0008484a0a0a0a084a0a0a0a084a0a0a0a00082a000818300880082020082a000000000"
+              , "a0a0840185a08000820200a0a082a0a082a1581ce0a714319812c3f773ba04ec5d6b3ffcd5aad850"
+              , "06805b047b08254183820101015820c5e21ab1c9f6022d81c3b25e3436cb7f1df77f9652ae3e1310"
+              , "c28e621dd87b4c01a0"
               ]
        in testCase "ledger state golden test" $
             unless (actual == expected) $

@@ -64,6 +64,7 @@ import Data.Default
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
+import Data.MemPack.Buffer (byteArrayFromShortByteString)
 import Data.Proxy
 import Data.Sequence.Strict (StrictSeq)
 import qualified Data.Sequence.Strict as StrictSeq
@@ -103,7 +104,7 @@ deriving instance
   , Eq (PParamsUpdate era)
   , EraGov era
   , Eq (Tx TopTx era)
-  , Eq (PredicateFailure (EraRule "LEDGER" era))
+  , Eq (ApplyTxError era)
   , Eq (StashedAVVMAddresses era)
   , Eq (TranslationContext era)
   , Eq (CertState era)
@@ -114,6 +115,9 @@ deriving instance
 ledgerExamples :: LedgerExamples ShelleyEra
 ledgerExamples =
   mkLedgerExamples
+    ( ShelleyApplyTxError . pure . DelegsFailure . DelplFailure . DelegFailure $
+        DelegateeNotRegisteredDELEG @ShelleyEra (mkKeyHash 1)
+    )
     (mkWitnessesPreAlonzo (Proxy @ShelleyEra))
     exampleCoin
     exampleTxBodyShelley
@@ -126,11 +130,10 @@ mkLedgerExamples ::
   , EraGov era
   , EraStake era
   , EraCertState era
-  , PredicateFailure (EraRule "DELEGS" era) ~ ShelleyDelegsPredFailure era
-  , PredicateFailure (EraRule "LEDGER" era) ~ ShelleyLedgerPredFailure era
   , Default (StashedAVVMAddresses era)
   , AtMostEra "Mary" era
   ) =>
+  ApplyTxError era ->
   (TxBody TopTx era -> [KeyPair Witness] -> TxWits era) ->
   Value era ->
   TxBody TopTx era ->
@@ -138,6 +141,7 @@ mkLedgerExamples ::
   TranslationContext era ->
   LedgerExamples era
 mkLedgerExamples
+  applyTxError
   mkWitnesses
   value
   txBody
@@ -145,9 +149,7 @@ mkLedgerExamples
   translationContext =
     LedgerExamples
       { leTx = tx
-      , leApplyTxError =
-          ApplyTxError . pure . DelegsFailure $
-            DelegateeNotRegisteredDELEG @era (mkKeyHash 1)
+      , leApplyTxError = applyTxError
       , lePParams = def
       , leProposedPPUpdates =
           ProposedPPUpdates $
@@ -284,7 +286,7 @@ examplePoolDistr =
           )
         ]
     )
-    (CompactCoin 1)
+    (knownNonZeroCoin @1)
 
 exampleNonMyopicRewards :: Map (Either Coin (Credential Staking)) (Map (KeyHash StakePool) Coin)
 exampleNonMyopicRewards =
@@ -375,7 +377,7 @@ exampleWithdrawals :: Withdrawals
 exampleWithdrawals =
   Withdrawals $
     Map.fromList
-      [ (exampleRewardAccount, Coin 100)
+      [ (exampleAccountAddress, Coin 100)
       ]
 
 exampleProposedPPUpdates ::
@@ -395,14 +397,14 @@ exampleStakePoolParams =
     , sppPledge = Coin 1
     , sppCost = Coin 5
     , sppMargin = unsafeBoundRational 0.1
-    , sppRewardAccount = exampleRewardAccount
+    , sppAccountAddress = exampleAccountAddress
     , sppOwners = Set.singleton $ hashKey $ vKey exampleStakeKey
     , sppRelays = StrictSeq.empty
     , sppMetadata =
         SJust $
           PoolMetadata
             { pmUrl = fromJust $ textToUrl 64 "consensus.pool"
-            , pmHash = "{}"
+            , pmHash = byteArrayFromShortByteString "{}"
             }
     }
 
@@ -415,8 +417,8 @@ exampleStakeKey = mkDSIGNKeyPair 1
 exampleVrfVerKeyHash :: VRFVerKeyHash StakePoolVRF
 exampleVrfVerKeyHash = VRFVerKeyHash "c5e21ab1c9f6022d81c3b25e3436cb7f1df77f9652ae3e1310c28e621dd87b4c"
 
-exampleRewardAccount :: RewardAccount
-exampleRewardAccount = RewardAccount Testnet (keyToCredential exampleStakeKey)
+exampleAccountAddress :: AccountAddress
+exampleAccountAddress = AccountAddress Testnet (AccountId (keyToCredential exampleStakeKey))
 
 exampleByronAddress :: Addr
 exampleByronAddress = AddrBootstrap (BootstrapAddress byronAddr)

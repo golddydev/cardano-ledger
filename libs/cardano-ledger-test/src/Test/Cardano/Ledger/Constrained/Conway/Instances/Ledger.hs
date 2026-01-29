@@ -13,6 +13,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -97,6 +98,7 @@ import Cardano.Ledger.Mary.Value (AssetName (..), MaryValue (..), MultiAsset (..
 import Cardano.Ledger.MemoBytes
 import Cardano.Ledger.Plutus.Data
 import Cardano.Ledger.Plutus.Language
+import Cardano.Ledger.Rewards
 import Cardano.Ledger.Shelley.LedgerState
 import Cardano.Ledger.Shelley.PoolRank
 import Cardano.Ledger.Shelley.RewardUpdate (FreeVars, Pulser, RewardAns, RewardPulser (RSLP))
@@ -117,6 +119,7 @@ import Constrained.API.Extend hiding (Sized)
 import Constrained.API.Extend qualified as C
 import Control.DeepSeq (NFData)
 import Crypto.Hash (Blake2b_224)
+import Data.Array.Byte (ByteArray (..))
 import Data.ByteString qualified as BS
 import Data.ByteString.Short (ShortByteString)
 import Data.ByteString.Short qualified as SBS
@@ -130,6 +133,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe
 import Data.OMap.Strict qualified as OMap
 import Data.OSet.Strict qualified as SOS
+import Data.Primitive.ByteArray (sizeofByteArray)
 import Data.Sequence (Seq)
 import Data.Sequence qualified as Seq
 import Data.Sequence.Strict (StrictSeq)
@@ -146,6 +150,7 @@ import GHC.Generics (Generic)
 import PlutusLedgerApi.V1 qualified as PV1
 import Test.Cardano.Ledger.Allegra.Arbitrary ()
 import Test.Cardano.Ledger.Alonzo.Arbitrary ()
+import Test.Cardano.Ledger.Binary.Arbitrary (genByteArray, genShortByteString)
 import Test.Cardano.Ledger.Constrained.Conway.Instances.Basic
 import Test.Cardano.Ledger.Constrained.Conway.Instances.PParams ()
 import Test.Cardano.Ledger.Conway.Arbitrary ()
@@ -771,7 +776,7 @@ instance HasSpec ShortByteString where
   combineSpec s s' = typeSpec $ s <> s'
   genFromTypeSpec (StringSpec ls) = do
     len <- genFromSpecT ls
-    SBS.pack <$> vectorOfT len (pureGen arbitrary)
+    pureGen $ genShortByteString len
   shrinkWithTypeSpec _ = shrink
   fixupWithTypeSpec _ _ = Nothing
   cardinalTypeSpec _ = TrueSpec
@@ -787,6 +792,24 @@ instance StringLike ShortByteString where
   lengthSpec = StringSpec
   getLengthSpec (StringSpec len) = len
   getLength = SBS.length
+
+instance HasSpec ByteArray where
+  type TypeSpec ByteArray = StringSpec
+  emptySpec = mempty
+  combineSpec s s' = typeSpec $ s <> s'
+  genFromTypeSpec (StringSpec ls) = do
+    len <- genFromSpecT ls
+    pureGen $ genByteArray len
+  shrinkWithTypeSpec _ = shrink
+  fixupWithTypeSpec _ _ = Nothing
+  cardinalTypeSpec _ = TrueSpec
+  conformsTo ba (StringSpec ls) = sizeofByteArray ba `conformsToSpec` ls
+  toPreds str (StringSpec len) = satisfies (strLen_ str) len
+
+instance StringLike ByteArray where
+  lengthSpec = StringSpec
+  getLengthSpec (StringSpec len) = len
+  getLength = sizeofByteArray
 
 data StringW :: [Type] -> Type -> Type where
   StrLenW :: StringLike s => StringW '[s] Int
@@ -835,9 +858,25 @@ instance HasSimpleRep Withdrawals
 
 instance HasSpec Withdrawals
 
-instance HasSimpleRep RewardAccount
+instance HasSimpleRep AccountId where
+  type SimpleRep AccountId = Credential Staking
+  toSimpleRep (AccountId c) = c
+  fromSimpleRep c = AccountId c
 
-instance HasSpec RewardAccount
+instance HasSpec AccountId
+
+instance HasSimpleRep AccountAddress where
+  type TheSop AccountAddress = '["AccountAddress" ::: '[Network, Credential Staking]]
+  toSimpleRep (AccountAddress n (AccountId c)) =
+    inject @"AccountAddress" @'["AccountAddress" ::: '[Network, Credential Staking]]
+      n
+      c
+  fromSimpleRep rep =
+    algebra @'["AccountAddress" ::: '[Network, Credential Staking]]
+      rep
+      (\n c -> AccountAddress n (AccountId c))
+
+instance HasSpec AccountAddress
 
 instance HasSimpleRep Network
 
@@ -908,14 +947,6 @@ instance Typeable c => HasSpec (ConwayPParams StrictMaybe c)
 instance HasSimpleRep (ConwayPParams Identity era)
 
 instance Era era => HasSpec (ConwayPParams Identity era)
-
-instance HasSimpleRep CoinPerByte where
-  -- TODO: consider `SimpleRep Coin` instead if this is annoying
-  type SimpleRep CoinPerByte = Coin
-  fromSimpleRep = CoinPerByte
-  toSimpleRep = unCoinPerByte
-
-instance HasSpec CoinPerByte
 
 instance HasSpec Char where
   type TypeSpec Char = ()
@@ -1218,7 +1249,8 @@ instance
 
 psPParamUpdate_ ::
   (EraSpecPParams era, Arbitrary (Proposals era)) =>
-  Term (Proposals era) -> Term (ProposalTree era)
+  Term (Proposals era) ->
+  Term (ProposalTree era)
 psPParamUpdate_ = sel @0
 
 data ProposalsSplit = ProposalsSplit
@@ -1385,6 +1417,10 @@ instance HasSpec LogWeight
 instance HasSimpleRep ChainAccountState
 
 instance HasSpec ChainAccountState
+
+instance HasSimpleRep StakePoolSnapShot
+
+instance HasSpec StakePoolSnapShot
 
 instance HasSimpleRep SnapShot
 

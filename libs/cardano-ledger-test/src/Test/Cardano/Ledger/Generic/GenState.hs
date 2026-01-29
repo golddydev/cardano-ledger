@@ -80,7 +80,6 @@ module Test.Cardano.Ledger.Generic.GenState (
   modifyModelMutFee,
 ) where
 
-import Cardano.Ledger.Address (RewardAccount (..))
 import Cardano.Ledger.Allegra.Scripts (
   AllegraEraScript,
   Timelock (..),
@@ -969,7 +968,7 @@ genStakePoolParams sppId = do
   sppPledge <- lift genPositiveVal
   sppCost <- lift genPositiveVal
   sppMargin <- lift arbitrary
-  sppRewardAccount <- RewardAccount Testnet <$> genFreshRegCred Rewarding
+  sppAccountAddress <- AccountAddress Testnet . AccountId <$> genFreshRegCred Rewarding
   let sppOwners = mempty
   let sppRelays = mempty
   let sppMetadata = SNothing

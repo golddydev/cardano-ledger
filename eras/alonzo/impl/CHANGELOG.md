@@ -2,9 +2,18 @@
 
 ## 1.15.0.0
 
+* Change `ScriptsNotPaidUTxO` to use `NonEmptyMap TxIn (TxOut era)` instead of `UTxO era`
+* Change `atadrPlutus`, `atadPlutus` and `atadPlutus'` to `atadrPlutusScripts`, `atadPlutusScripts` and `atadPlutusScripts'` respectively
+* Add `AlonzoApplyTxError` constructor for `ApplyTxError era`
+* Renamed:
+  - `appMinFeeA` -> `appTxFeePerByte`
+  - `appMinFeeB` -> `appTxFeeFixed`
+* Changed type of `appMinFeeA` to `CoinPerByte`
+* Change sets containing errors into `NonEmptySet` for `AlonzoUtxoPredFailure`, `AlonzoUtxowPredFailure`
+* Change all lists into `NonEmpty` for `AlonzoUtxoPredFailure`, `AlonzoUtxosPredFailure`, `AlonzoUtxowPredFailure`
+* Change `collectPlutusScriptsWithContext` to return a `NonEmpty` list of failures
 * Changed the type of `dappMinUTxOValue` to `CompactForm Coin` in `DowngradeAlonzoPParams`
 * Changed the type of the following fields to `CompactForm Coin` in `AlonzoPParams`:
-  - `appMinFeeA`
   - `appMinFeeB`
   - `appKeyDeposit`
   - `appMinPoolCost`
@@ -52,10 +61,16 @@
 
 ### `cddl`
 
+* Move `cddl-files` to `cddl/data`.
+* Export `exUnitPricesRule` and `requiredSignersRule` for reuse.
+* Make `plutus_v1_script` and `plutus_data` era generic.
 * Add full `HuddleSpec`.
 
 ### `testlib`
 
+* Remove `huddle-cddl` and the `CDDL` modules.
+* Add `Test.Cardano.Ledger.Alonzo.Binary.Golden`
+* Add `witsEmptyField`
 * Added `Arbitrary` instance for `AlonzoExtraConfig`
 * Add CDDL definitions for Plutus V1 types: `big_int`, `big_uint`, `big_nint`, `bounded_bytes`
 * Rename `plutus_script` -> `plutus_v1_script` in CDDL

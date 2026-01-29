@@ -2,20 +2,66 @@
 
 ## 1.19.0.0
 
+* Remove re-exports of `Reward` and `RewardType` from `Cardano.Ledger.Core`
+* Add re-exports of `Addr`, `AccountAddress`, `Withdrawals` and `AccountId` from `Cardano.Ledger.Core`
+* Add `HasZero` instance for `CompactForm Coin`
+* Export `nonZeroM`
+* Add `knownNonZeroCoin` and `knownNonZeroCompactCoin`
+* Add `sumCredentialsCompactStake`
+* Change type of `pdTotalActiveStake` to `NonZero Coin` and change its value in `Default` instance to `1`
+* Introduce `StakePoolSnapShot`, `mkStakePoolSnapShot` and remove `poolStake` as unused
+* Add `ssTotalActiveStake` and `ssStakePoolsSnapShot` to `SnapShot` type.
+* Add `Semigroup` and `Monoid` instances for `Withdrawals` and `DirectDeposits`.
+* Rename `RewardAccount` to `AccountAddress`.
+  - Deprecate `RewardAccount` (now a pattern-synonym) and its fields and lenses.
+  - Add `AccountId` new-type for `Credential Staking` in `AccountAddress`.
+  - Add lenses
+    + `accountAddressAccountIdL`
+    + `accountAddressCredentialL`
+    + `accountAddressNetworkIdL`
+  - Rename serialization and header inspection functions and deprecate older ones:
+    + `serialiseRewardAccount` → `serialiseAccountAddress`
+    + `deserialiseRewardAccount` → `deserialiseAccountAddress`
+    + `putRewardAccount` → `putAccountAddress`
+    + `decodeRewardAccount` → `decodeAccountAddress`
+    + `fromCborRewardAccount` → `fromCborAccountAddress`
+  - Updated types:
+    + `Withdrawals` and `DirectDeposits` now use `AccountAddress` instead of `RewardAccount`
+    + `StakePoolState`: `spsRewardAccount` → `spsAccountAddress`
+    + `StakePoolState`: `spsRewardAccountL` → `spsAccountAddressL`
+    + `StakePoolParams`: `sppRewardAccount` → `sppAccountAddress`
+    + `StakePoolParams` JSON: `rewardAccount` → `accountAddress`
+* Add `DirectDeposits` newtype.
+* Change `PoolMetadata.pmHash` from `ByteString` to `Data.Array.Byte.ByteArray` to reduce memory fragmentation.
+* Added:
+  - `ppTxFeeFixedCompactL`
+  - `ppuTxFeeFixedCompactL`
+  - `coinPerByteL`
+  - `coinPerByteFL`
+  - `hkdPartialCompactCoinL`
+  - `hkdCoinPerByteL`
+* Renamed:
+  - `hkdMinFeeAL` -> `hkdTxFeePerByteL`
+  - `ppMinFeeAL` -> `ppTxFeePerByteL`
+  - `ppuMinFeeAL` -> `ppuTxFeePerByteL`
+  - `hkdMinFeeBL` -> `hkdTxFeeFixedL`
+  - `ppMinFeeBL` -> `ppTxFeeFixedL`
+  - `ppuMinFeeBL` -> `ppuTxFeeFixedL`
+* Changed type to `CoinPerByte`:
+  - `hkdMinFeeAL`
+  - `ppMinFeeAL`
+  - `ppuMinFeeAL`
+* Added `CoinPerByte` (moved from `cardano-ledger-babbage`)
+* Add mocked-up `PerasKey` type
+* Add mocked-up `validatePerasCert` validation function
 * Changed name and type to `CompactForm Coin`:
-  - `hkdMinFeeAL` -> `hkdMinFeeACompactL`
-  - `hkdMinFeeBL` -> `hkdMinFeeBCompactL`
   - `hkdKeyDepositL` -> `hkdKeyDepositCompactL`
   - `hkdMinUTxOValueL` -> `hkdMinUTxOValueCompactL`
   - `hkdMinPoolCostL` -> `hkdMinPoolCostCompactL`
 * Added:
-  - `ppMinFeeACompactL`,
-  - `ppMinFeeBCompactL`,
   - `ppKeyDepositCompactL`,
   - `ppMinUTxOValueCompactL`,
   - `ppMinPoolCostCompactL`,
-  - `ppuMinFeeACompactL`,
-  - `ppuMinFeeBCompactL`,
   - `ppuKeyDepositCompactL`,
   - `ppuMinUTxOValueCompactL`,
   - `ppuMinPoolCostCompactL`,
@@ -81,12 +127,26 @@
 
 ### `cddl`
 
+* Re-export necessary functionality from `cuddle` for use in the eras, crucially hiding `(=:=)` and `(=:~)`.
+* Change `HuddleRule` and related typeclasses to imply their name using the type-level string via a `Proxy`.
+* Add `HuddleRule1` typeclass.
 * Export `Era` to reuse via the import chain of modules across eras.
 * Add `HuddleRule`, `HuddleGroup` and `HuddleGRule` type class for era-polymorphic CDDL generation.
 * Add `HuddleSpec` for all common CDDL types.
 
 ### `testlib`
 
+* Stop re-exporting QuickCheck's `NonZero` as it conflcicts with our internal type.
+* Rename `RewardAccount` to `AccountAddress`
+  - `deserialiseRewardAccountOld` to `deserialiseAccountAddressOld`.
+  - `registerRewardAccount` to `registerAccountAddress`
+  - `getRewardAccountFor` to `getAccountAddressFor`
+  - `registerPoolWithRewardAccount` to `registerPoolWithAccountAddress`
+  - `expectRegisteredRewardAddress` to `expectRegisteredAccountAddress`
+* Added `Arbitrary` and `ToExpr` instances for `CoinPerByte` (moved from `cardano-ledger-babbage`)
+* Remove `huddle-cddl` and the `CDDL` modules.
+* Add `forEachEraVersion`
+* Add `Test.Cardano.Ledger.Core.Binary.Golden`
 * Add `kes_period` and `sequence_number` CDDL definitions.
 * Add CDDL definitions for:
   - Credentials: `credential`, `stake_credential`

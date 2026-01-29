@@ -29,25 +29,19 @@ module Cardano.Ledger.Shelley.UTxO (
   module UTxO,
 ) where
 
-import Cardano.Ledger.Address (Addr (..), bootstrapKeyHash)
+import Cardano.Ledger.Address (accountAddressCredentialL, bootstrapKeyHash)
 import Cardano.Ledger.BaseTypes (StrictMaybe (..))
 import Cardano.Ledger.Coin (Coin (..))
-import Cardano.Ledger.Core
 import Cardano.Ledger.Credential (Credential (..), credKeyHashWitness, credScriptHash)
 import Cardano.Ledger.Keys (
   GenDelegs (..),
   asWitness,
   genDelegKeyHash,
  )
+import Cardano.Ledger.Shelley.Core
 import Cardano.Ledger.Shelley.Era (ShelleyEra)
 import Cardano.Ledger.Shelley.PParams (ProposedPPUpdates (ProposedPPUpdates), Update (..))
 import Cardano.Ledger.Shelley.State ()
-import Cardano.Ledger.Shelley.Tx ()
-import Cardano.Ledger.Shelley.TxBody (
-  ShelleyEraTxBody (..),
-  Withdrawals (..),
-  raCredential,
- )
 import Cardano.Ledger.State (
   EraCertState (..),
   StakePoolParams (..),
@@ -109,7 +103,7 @@ getShelleyScriptsNeeded u txBody =
   ShelleyScriptsNeeded
     ( scriptHashes
         `Set.union` Set.fromList
-          [sh | w <- withdrawals, Just sh <- [credScriptHash (raCredential w)]]
+          [sh | w <- withdrawals, let cred = w ^. accountAddressCredentialL, Just sh <- [credScriptHash cred]]
         `Set.union` Set.fromList
           [sh | c <- certificates, Just sh <- [getScriptWitnessTxCert c]]
     )
@@ -202,7 +196,7 @@ getShelleyMinFeeTxUtxo pparams tx = getMinFeeTx pparams tx 0
 
 -- | Collect the set of hashes of keys that needs to sign a
 --  given transaction. This set consists of the txin owners,
---  certificate authors, and withdrawal reward accounts.
+--  certificate authors, and withdrawal account addresses.
 witsVKeyNeededGenDelegs ::
   forall era.
   ShelleyEraTxBody era =>
@@ -248,9 +242,10 @@ getShelleyWitsVKeyNeededNoGov utxo' txBody =
     wdrlAuthors = Map.foldrWithKey' accum Set.empty (unWithdrawals (txBody ^. withdrawalsTxBodyL))
       where
         accum key _ !ans =
-          case credKeyHashWitness (raCredential key) of
-            Nothing -> ans
-            Just vkeyWit -> Set.insert vkeyWit ans
+          let cred = key ^. accountAddressCredentialL
+           in case credKeyHashWitness cred of
+                Nothing -> ans
+                Just vkeyWit -> Set.insert vkeyWit ans
     owners :: Set (KeyHash Witness)
     owners = foldr' accum Set.empty (txBody ^. certsTxBodyL)
       where

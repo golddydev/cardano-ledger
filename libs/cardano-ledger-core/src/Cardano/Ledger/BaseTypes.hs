@@ -90,6 +90,11 @@ module Cardano.Ledger.BaseTypes (
   -- * Aeson helpers
   KeyValuePairs (..),
   ToKeyValuePairs (..),
+
+  -- * Peras-specific types
+  PerasCert (..),
+  PerasKey (..),
+  validatePerasCert,
 ) where
 
 import Cardano.Crypto.Hash
@@ -213,14 +218,14 @@ instance NoThunks ProtVer
 instance ToJSON ProtVer where
   toJSON (ProtVer major minor) =
     object
-      [ "major" .= getVersion64 major
+      [ "major" .= getVersion32 major
       , "minor" .= minor
       ]
 
 instance FromJSON ProtVer where
   parseJSON =
     withObject "ProtVer" $ \obj -> do
-      pvMajor <- mkVersion64 =<< obj .: "major"
+      pvMajor <- mkVersion32 =<< obj .: "major"
       pvMinor <- obj .: "minor"
       pure ProtVer {..}
 
@@ -988,3 +993,37 @@ newtype KeyValuePairs a = KeyValuePairs {unKeyValuePairs :: a}
 instance ToKeyValuePairs a => ToJSON (KeyValuePairs a) where
   toJSON = object . toKeyValuePairs . unKeyValuePairs
   toEncoding = pairs . mconcat . toKeyValuePairs . unKeyValuePairs
+
+--------------------------------------------------------------------------------
+-- Peras-related types
+--------------------------------------------------------------------------------
+
+-- | Placeholder for Peras certificates
+--
+-- NOTE: The real type will be brought from 'cardano-base' once it's ready.
+data PerasCert = PerasCert
+  deriving (Eq, Show, Generic, NoThunks)
+
+instance NFData PerasCert
+
+instance EncCBOR PerasCert where
+  encCBOR PerasCert =
+    encCBOR ()
+
+instance DecCBOR PerasCert where
+  decCBOR = do
+    () <- decCBOR
+    pure PerasCert
+
+-- | Placeholder for Peras public keys
+--
+-- NOTE: The real type will be brought from 'cardano-base' once it's ready.
+data PerasKey = PerasKey
+  deriving (Eq, Show, Generic, NoThunks)
+
+-- | Mocked-up Peras certificate validation routine
+--
+-- NOTE: this function will be replaced with the real implementation from
+-- 'cardano-base' once it's ready.
+validatePerasCert :: Nonce -> PerasKey -> PerasCert -> Bool
+validatePerasCert _ _ _ = True

@@ -23,7 +23,6 @@ module Test.Cardano.Ledger.Shelley.BenchmarkFunctions (
   ledgerStateWithNkeysMpools, -- How to precompute env for the Stake Delegation transactions
 ) where
 
-import Cardano.Ledger.Address (Addr, RewardAccount (..))
 import Cardano.Ledger.BaseTypes (
   EpochInterval (..),
   Network (..),
@@ -32,7 +31,7 @@ import Cardano.Ledger.BaseTypes (
   inject,
   mkTxIxPartial,
  )
-import Cardano.Ledger.Coin (Coin (..))
+import Cardano.Ledger.Coin (Coin (..), CompactForm (CompactCoin))
 import Cardano.Ledger.Credential (Credential (..))
 import Cardano.Ledger.Keys (asWitness)
 import Cardano.Ledger.Shelley (ShelleyEra)
@@ -117,8 +116,8 @@ ppsBench =
     & ppKeyDepositL .~ Coin 0
     & ppMaxBHSizeL .~ 10000
     & ppMaxTxSizeL .~ 1000000000
-    & ppMinFeeAL .~ Coin 0
-    & ppMinFeeBL .~ Coin 0
+    & ppTxFeePerByteL .~ CoinPerByte (CompactCoin 0)
+    & ppTxFeeFixedL .~ Coin 0
     & ppMinUTxOValueL .~ Coin 10
     & ppPoolDepositL .~ Coin 0
     & ppRhoL .~ unsafeBoundRational 0.0021
@@ -296,7 +295,7 @@ ledgerDeRegisterStakeKeys x y state =
 -- ===========================================================
 -- Reward Withdrawal example
 
--- Create a transaction body that withdrawals from reward accounts,
+-- Create a transaction body that withdrawals from account addresses,
 -- corresponding to the keys seeded with (RawSeed x 0 0 0 0) to (RawSeed y 0 0 0 0).
 txbWithdrawals :: Word64 -> Word64 -> TxBody TopTx ShelleyEra
 txbWithdrawals x y =
@@ -306,14 +305,14 @@ txbWithdrawals x y =
     StrictSeq.empty
     ( Withdrawals $
         Map.fromList $
-          fmap (\ks -> (RewardAccount Testnet (stakeKeyToCred ks), Coin 0)) (stakeKeys x y)
+          fmap (\ks -> (AccountAddress Testnet (AccountId (stakeKeyToCred ks)), Coin 0)) (stakeKeys x y)
     )
     (Coin 0)
     (SlotNo 10)
     SNothing
     SNothing
 
--- Create a transaction that withdrawals from a reward accounts.
+-- Create a transaction that withdrawals from a account addresses.
 -- It spends the genesis coin indexed by 1.
 txWithdrawals :: Word64 -> Word64 -> Tx TopTx ShelleyEra
 txWithdrawals x y =
@@ -358,7 +357,7 @@ mkStakePoolParams keys =
     , sppPledge = Coin 0
     , sppCost = Coin 0
     , sppMargin = unsafeBoundRational 0
-    , sppRewardAccount = RewardAccount Testnet firstStakeKeyCred
+    , sppAccountAddress = AccountAddress Testnet (AccountId firstStakeKeyCred)
     , sppOwners = Set.singleton $ hashKey (vKey stakeKeyOne)
     , sppRelays = StrictSeq.empty
     , sppMetadata = SNothing

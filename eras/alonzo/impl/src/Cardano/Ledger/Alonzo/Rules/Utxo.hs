@@ -33,9 +33,7 @@ module Cardano.Ledger.Alonzo.Rules.Utxo (
 ) where
 
 import Cardano.Ledger.Address (
-  Addr (..),
   CompactAddr,
-  RewardAccount,
   isBootstrapCompactAddr,
   isPayCredScriptCompactAddr,
  )
@@ -104,9 +102,11 @@ import qualified Data.ByteString.Lazy as BSL (length)
 import Data.Coerce (coerce)
 import Data.Either (isRight)
 import Data.Foldable as F (foldl', sequenceA_, toList)
+import Data.List.NonEmpty (NonEmpty)
+import Data.Map.NonEmpty (NonEmptyMap)
 import qualified Data.Map.Strict as Map
-import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Set.NonEmpty (NonEmptySet)
 import Data.Word (Word32)
 import GHC.Generics (Generic)
 import Lens.Micro
@@ -119,7 +119,7 @@ import Validation
 data AlonzoUtxoPredFailure era
   = -- | The bad transaction inputs
     BadInputsUTxO
-      (Set TxIn)
+      (NonEmptySet TxIn)
   | OutsideValidityIntervalUTxO
       -- | transaction's validity interval
       ValidityInterval
@@ -134,23 +134,23 @@ data AlonzoUtxoPredFailure era
       -- | the expected network id
       Network
       -- | the set of addresses with incorrect network IDs
-      (Set Addr)
+      (NonEmptySet Addr)
   | WrongNetworkWithdrawal
       -- | the expected network id
       Network
-      -- | the set of reward addresses with incorrect network IDs
-      (Set RewardAccount)
+      -- | the set of account addresses with incorrect network IDs
+      (NonEmptySet AccountAddress)
   | -- | list of supplied transaction outputs that are too small
     OutputTooSmallUTxO
-      [TxOut era]
+      (NonEmpty (TxOut era))
   | -- | Subtransition Failures
     UtxosFailure (PredicateFailure (EraRule "UTXOS" era))
   | -- | list of supplied bad transaction outputs
     OutputBootAddrAttrsTooBig
-      [TxOut era]
+      (NonEmpty (TxOut era))
   | -- | list of supplied bad transaction output triples (actualSize,PParameterMaxValue,TxOut)
     OutputTooBigUTxO
-      [(Int, Int, TxOut era)]
+      (NonEmpty (Int, Int, TxOut era))
   | InsufficientCollateral
       -- | balance computed
       DeltaCoin
@@ -158,7 +158,7 @@ data AlonzoUtxoPredFailure era
       Coin
   | -- | The UTxO entries which have the wrong kind of script
     ScriptsNotPaidUTxO
-      (UTxO era)
+      (NonEmptyMap TxIn (TxOut era))
   | ExUnitsTooBigUTxO (Mismatch RelLTEQ ExUnits)
   | -- | The inputs marked for use as fees contain non-ADA tokens
     CollateralContainsNonADA (Value era)
@@ -314,8 +314,7 @@ validateScriptsNotPaidUTxO ::
   Map.Map TxIn (TxOut era) ->
   Test (AlonzoUtxoPredFailure era)
 validateScriptsNotPaidUTxO utxoCollateral =
-  failureUnless (all vKeyLocked utxoCollateral) $
-    ScriptsNotPaidUTxO (UTxO (Map.filter (not . vKeyLocked) utxoCollateral))
+  failureOnNonEmptyMap (Map.filter (not . vKeyLocked) utxoCollateral) ScriptsNotPaidUTxO
 
 -- > balance ∗ 100 ≥ txfee txb ∗ (collateralPercent pp)
 validateInsufficientCollateral ::
@@ -379,7 +378,7 @@ validateOutputTooSmallUTxO ::
   f (TxOut era) ->
   Test (AlonzoUtxoPredFailure era)
 validateOutputTooSmallUTxO pp outputs =
-  failureUnless (null outputsTooSmall) $ OutputTooSmallUTxO outputsTooSmall
+  failureOnNonEmpty outputsTooSmall OutputTooSmallUTxO
   where
     outputsTooSmall =
       filter
@@ -404,7 +403,7 @@ validateOutputTooBigUTxO ::
   f (TxOut era) ->
   Test (AlonzoUtxoPredFailure era)
 validateOutputTooBigUTxO pp outputs =
-  failureUnless (null outputsTooBig) $ OutputTooBigUTxO outputsTooBig
+  failureOnNonEmpty outputsTooBig OutputTooBigUTxO
   where
     maxValSize = pp ^. ppMaxValSizeL
     protVer = pp ^. ppProtocolVersionL
@@ -614,8 +613,7 @@ instance
 
 encFail ::
   forall era.
-  ( Era era
-  , EncCBOR (TxOut era)
+  ( EncCBOR (TxOut era)
   , EncCBOR (Value era)
   , EncCBOR (PredicateFailure (EraRule "UTXOS" era))
   ) =>
@@ -663,8 +661,7 @@ encFail NoCollateralInputs =
   Sum NoCollateralInputs 20
 
 decFail ::
-  ( Era era
-  , DecCBOR (TxOut era)
+  ( DecCBOR (TxOut era)
   , DecCBOR (Value era)
   , DecCBOR (PredicateFailure (EraRule "UTXOS" era))
   ) =>
@@ -683,7 +680,7 @@ decFail 9 = SumD WrongNetworkWithdrawal <! From <! From
 decFail 10 = SumD OutputBootAddrAttrsTooBig <! From
 decFail 12 = SumD OutputTooBigUTxO <! From
 decFail 13 = SumD InsufficientCollateral <! From <! From
-decFail 14 = SumD ScriptsNotPaidUTxO <! D (UTxO <$> decCBOR)
+decFail 14 = SumD ScriptsNotPaidUTxO <! From
 decFail 15 = SumD ExUnitsTooBigUTxO <! From
 decFail 16 = SumD CollateralContainsNonADA <! From
 decFail 17 = SumD WrongNetworkInTxBody <! From
@@ -725,4 +722,4 @@ allegraToAlonzoUtxoPredFailure = \case
   Allegra.OutputTooSmallUTxO x -> OutputTooSmallUTxO x
   Allegra.UpdateFailure x -> UtxosFailure (injectFailure @"UTXOS" @t x)
   Allegra.OutputBootAddrAttrsTooBig xs -> OutputBootAddrAttrsTooBig xs
-  Allegra.OutputTooBigUTxO xs -> OutputTooBigUTxO (map (0,0,) xs)
+  Allegra.OutputTooBigUTxO xs -> OutputTooBigUTxO (fmap (0,0,) xs)

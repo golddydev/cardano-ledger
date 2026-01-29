@@ -41,8 +41,13 @@ import Cardano.Ledger.Babbage.Core (BabbageEraTxBody)
 import Cardano.Ledger.Babbage.Rules (BabbageUtxoPredFailure, BabbageUtxowPredFailure)
 import Cardano.Ledger.BaseTypes (
   Mismatch (..),
+  Nonce,
+  PerasCert,
+  PerasKey (..),
   Relation (..),
   ShelleyBase,
+  StrictMaybe (..),
+  validatePerasCert,
  )
 import Cardano.Ledger.Binary (DecCBOR (..), EncCBOR (..))
 import Cardano.Ledger.Binary.Coders (Decode (..), Encode (..), decode, encode, (!>), (<!))
@@ -60,6 +65,7 @@ import Cardano.Ledger.Conway.Rules (
  )
 import qualified Cardano.Ledger.Conway.Rules as Conway
 import Cardano.Ledger.Core
+import Cardano.Ledger.Dijkstra.BlockBody (DijkstraEraBlockBody (..))
 import Cardano.Ledger.Dijkstra.Era (DijkstraBBODY, DijkstraEra)
 import Cardano.Ledger.Dijkstra.Rules.Gov (DijkstraGovPredFailure)
 import Cardano.Ledger.Dijkstra.Rules.GovCert (DijkstraGovCertPredFailure)
@@ -79,12 +85,17 @@ import Cardano.Ledger.Shelley.Rules (
   ShelleyUtxowPredFailure,
  )
 import qualified Cardano.Ledger.Shelley.Rules as Shelley
+import Control.DeepSeq (NFData)
 import Control.State.Transition (
   Embed (..),
   STS (..),
+  TransitionRule,
+  judgmentContext,
  )
+import Control.State.Transition.Extended (TRC (..), failBecause, (?!))
 import Data.Sequence (Seq)
 import GHC.Generics (Generic)
+import Lens.Micro ((^.))
 import NoThunks.Class (NoThunks (..))
 
 data DijkstraBbodyPredFailure era
@@ -94,7 +105,11 @@ data DijkstraBbodyPredFailure era
     LedgersFailure (PredicateFailure (EraRule "LEDGERS" era))
   | TooManyExUnits (Mismatch RelLTEQ ExUnits)
   | BodyRefScriptsSizeTooBig (Mismatch RelLTEQ Int)
+  | PrevEpochNonceNotPresent
+  | PerasCertValidationFailed PerasCert Nonce
   deriving (Generic)
+
+instance NFData (PredicateFailure (EraRule "LEDGERS" era)) => NFData (DijkstraBbodyPredFailure era)
 
 deriving instance
   (Era era, Show (PredicateFailure (EraRule "LEDGERS" era))) =>
@@ -121,6 +136,9 @@ instance
       LedgersFailure x -> Sum (LedgersFailure @era) 2 !> To x
       TooManyExUnits mm -> Sum TooManyExUnits 3 !> To mm
       BodyRefScriptsSizeTooBig mm -> Sum BodyRefScriptsSizeTooBig 4 !> To mm
+      PrevEpochNonceNotPresent -> Sum PrevEpochNonceNotPresent 5
+      PerasCertValidationFailed cert nonce ->
+        Sum PerasCertValidationFailed 6 !> To cert !> To nonce
 
 instance
   ( Era era
@@ -134,6 +152,8 @@ instance
     2 -> SumD LedgersFailure <! From
     3 -> SumD TooManyExUnits <! From
     4 -> SumD BodyRefScriptsSizeTooBig <! From
+    5 -> SumD PrevEpochNonceNotPresent
+    6 -> SumD PerasCertValidationFailed <! From <! From
     n -> Invalid n
 
 type instance EraRuleFailure "BBODY" DijkstraEra = DijkstraBbodyPredFailure DijkstraEra
@@ -297,10 +317,12 @@ instance
   , AlonzoEraPParams era
   , InjectRuleFailure "BBODY" AlonzoBbodyPredFailure era
   , InjectRuleFailure "BBODY" ConwayBbodyPredFailure era
+  , InjectRuleFailure "BBODY" DijkstraBbodyPredFailure era
   , EraRule "BBODY" era ~ DijkstraBBODY era
   , AlonzoEraTx era
   , BabbageEraTxBody era
   , ConwayEraPParams era
+  , DijkstraEraBlockBody era
   ) =>
   STS (DijkstraBBODY era)
   where
@@ -317,7 +339,47 @@ instance
   type Event (DijkstraBBODY era) = AlonzoBbodyEvent era
 
   initialRules = []
-  transitionRules = [Conway.conwayBbodyTransition @era >> alonzoBbodyTransition @era]
+  transitionRules =
+    [ dijkstraBbodyTransition @era
+        >> Conway.conwayBbodyTransition @era
+        >> alonzoBbodyTransition @era
+    ]
+
+dijkstraBbodyTransition ::
+  forall era.
+  ( Signal (EraRule "BBODY" era) ~ Block BHeaderView era
+  , State (EraRule "BBODY" era) ~ ShelleyBbodyState era
+  , InjectRuleFailure "BBODY" DijkstraBbodyPredFailure era
+  , DijkstraEraBlockBody era
+  ) =>
+  TransitionRule (EraRule "BBODY" era)
+dijkstraBbodyTransition = do
+  judgmentContext
+    >>= \( TRC
+             ( _
+               , state
+               , Block bh bbody
+               )
+           ) -> do
+        case bbody ^. perasCertBlockBodyL of
+          SNothing ->
+            -- No certificate is present, so no validation is needed.
+            --
+            -- NOTE: this currently allows the previous epoch nonce to be
+            -- missing until an actual certificate appears in a block body.
+            -- This could be tightened in the future.
+            pure ()
+          SJust cert ->
+            case bhviewPrevEpochNonce bh of
+              Nothing ->
+                -- Certificate is present, but previous epoch nonce is missing.
+                failBecause (injectFailure PrevEpochNonceNotPresent)
+              Just nonce ->
+                -- Both certificate and previous epoch nonce are present, so we
+                -- can go ahead and validate it.
+                validatePerasCert nonce PerasKey cert
+                  ?! injectFailure (PerasCertValidationFailed cert nonce)
+        pure state
 
 conwayToDijkstraBbodyPredFailure ::
   forall era. ConwayBbodyPredFailure era -> DijkstraBbodyPredFailure era

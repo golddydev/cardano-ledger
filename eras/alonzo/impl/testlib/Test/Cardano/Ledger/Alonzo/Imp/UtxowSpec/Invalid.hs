@@ -33,10 +33,12 @@ import Cardano.Ledger.Plutus (
  )
 import Cardano.Ledger.Shelley.LedgerState (epochStateStakePoolsL, nesEsL)
 import Cardano.Ledger.Shelley.Rules (ShelleyUtxowPredFailure (..))
+import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import Data.Sequence.Strict (StrictSeq ((:<|)))
 import qualified Data.Set as Set
+import qualified Data.Set.NonEmpty as NES
 import Lens.Micro ((%~), (&), (.~), (<>~), (^.))
 import qualified PlutusLedgerApi.Common as P
 import Test.Cardano.Ledger.Alonzo.Arbitrary ()
@@ -56,7 +58,7 @@ spec = describe "Invalid transactions" $ do
     scriptHash <- impAddNativeScript $ mkTimeStart 100
     txIn <- produceScript scriptHash
     let tx = mkBasicTx mkBasicTxBody & bodyTxL . inputsTxBodyL .~ [txIn]
-    submitFailingTx tx [injectFailure $ ScriptWitnessNotValidatingUTXOW [scriptHash]]
+    submitFailingTx tx [injectFailure $ ScriptWitnessNotValidatingUTXOW $ NES.singleton scriptHash]
 
   let resetAddrWits tx = updateAddrTxWits $ tx & witsTxL . addrTxWitsL .~ []
       fixupResetAddrWits = fixupPPHash >=> resetAddrWits
@@ -88,7 +90,7 @@ spec = describe "Invalid transactions" $ do
           withPostFixup (fixupResetAddrWits . (witsTxL . datsTxWitsL .~ mempty)) $
             submitFailingTx
               tx
-              [injectFailure $ MissingRequiredDatums [missingDatum] []]
+              [injectFailure $ MissingRequiredDatums (NES.singleton missingDatum) []]
 
         it "NotAllowedSupplementalDatums" $ do
           txIn <- produceScript redeemerSameAsDatumHash
@@ -100,7 +102,7 @@ spec = describe "Invalid transactions" $ do
                   & witsTxL . datsTxWitsL .~ TxDats (Map.singleton extraDatumHash extraDatum)
           submitFailingTx
             tx
-            [injectFailure $ NotAllowedSupplementalDatums [extraDatumHash] []]
+            [injectFailure $ NotAllowedSupplementalDatums (NES.singleton extraDatumHash) []]
 
         describe "PPViewHashesDontMatch" $ do
           let
@@ -146,7 +148,7 @@ spec = describe "Invalid transactions" $ do
           -- actual script expects it
           if lang >= PlutusV3
             then submitPhase2Invalid_ tx
-            else submitFailingTx tx [injectFailure $ UnspendableUTxONoDatumHash [txIn]]
+            else submitFailingTx tx [injectFailure $ UnspendableUTxONoDatumHash $ NES.singleton txIn]
 
         it "Missing phase-2 script witness" $ do
           let scriptHash = alwaysSucceedsWithDatumHash
@@ -159,7 +161,7 @@ spec = describe "Invalid transactions" $ do
                   . (witsTxL . rdmrsTxWitsL .~ mempty)
               resetScriptHash = pure . (bodyTxL . scriptIntegrityHashTxBodyL .~ SNothing)
           withPostFixup (dropScriptWitnesses >=> resetScriptHash >=> resetAddrWits) $
-            submitFailingTx tx [injectFailure $ MissingScriptWitnessesUTXOW [scriptHash]]
+            submitFailingTx tx [injectFailure $ MissingScriptWitnessesUTXOW $ NES.singleton scriptHash]
 
         it "Redeemer with incorrect purpose" $ do
           let scriptHash = alwaysSucceedsWithDatumHash
@@ -198,7 +200,7 @@ spec = describe "Invalid transactions" $ do
           withPostFixup (pure . dropCollateralWitness) $
             submitFailingTx
               tx
-              [injectFailure $ MissingVKeyWitnessesUTXOW [asWitness collateralHash]]
+              [injectFailure $ MissingVKeyWitnessesUTXOW $ NES.singleton $ asWitness collateralHash]
 
         -- Post-Alonzo eras produce additional post-Alonzo predicate failures that we can't include here
         unless (lang > eraMaxLanguage @AlonzoEra) $ do
@@ -214,7 +216,7 @@ spec = describe "Invalid transactions" $ do
                 txFixed <- fixupTx tx
                 -- The `Ix` of the redeemer may have been changed by `fixupRedeemerIndices`
                 let fixedRedeemers = txFixed ^. witsTxL . rdmrsTxWitsL . unRedeemersL
-                    extraRedeemers = Map.keys $ Map.filter (== redeemer) fixedRedeemers
+                    extraRedeemers = NonEmpty.fromList $ Map.keys $ Map.filter (== redeemer) fixedRedeemers
                 withNoFixup $
                   submitFailingTx
                     txFixed

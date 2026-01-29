@@ -40,12 +40,7 @@ module Cardano.Ledger.Shelley.Rules.Utxo (
   utxoEnvCertStateL,
 ) where
 
-import Cardano.Ledger.Address (
-  Addr (..),
-  bootstrapAddressAttrsSize,
-  getNetwork,
-  raNetwork,
- )
+import Cardano.Ledger.Address (bootstrapAddressAttrsSize, getNetwork)
 import Cardano.Ledger.BaseTypes (
   Mismatch (..),
   Network,
@@ -70,7 +65,6 @@ import Cardano.Ledger.Shelley.Rules.Ppup (
   ShelleyPpupPredFailure,
  )
 import Cardano.Ledger.Shelley.Rules.Reports (showTxCerts)
-import Cardano.Ledger.Shelley.TxBody (RewardAccount)
 import Cardano.Ledger.Shelley.UTxO (produced)
 import Cardano.Ledger.Slot (SlotNo)
 import Cardano.Ledger.State
@@ -86,6 +80,8 @@ import Control.State.Transition (
   STS (..),
   TRC (..),
   TransitionRule,
+  failureOnNonEmpty,
+  failureOnNonEmptySet,
   judgmentContext,
   liftSTS,
   tellEvent,
@@ -94,10 +90,12 @@ import Control.State.Transition (
   wrapFailed,
  )
 import Data.Foldable as F (foldl', toList)
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as Map
 import Data.MapExtras (extractKeys)
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Set.NonEmpty (NonEmptySet)
 import Data.Typeable
 import Data.Word (Word32)
 import GHC.Generics (Generic)
@@ -167,7 +165,7 @@ instance (Era era, NFData (Event (EraRule "PPUP" era)), NFData (TxOut era)) => N
 
 data ShelleyUtxoPredFailure era
   = BadInputsUTxO
-      (Set TxIn) -- The bad transaction inputs
+      (NonEmptySet TxIn) -- The bad transaction inputs
   | ExpiredUTxO
       (Mismatch RelLTEQ SlotNo)
   | MaxTxSizeUTxO
@@ -179,15 +177,15 @@ data ShelleyUtxoPredFailure era
       (Mismatch RelEQ (Value era))
   | WrongNetwork
       Network -- the expected network id
-      (Set Addr) -- the set of addresses with incorrect network IDs
+      (NonEmptySet Addr) -- the set of addresses with incorrect network IDs
   | WrongNetworkWithdrawal
       Network -- the expected network id
-      (Set RewardAccount) -- the set of reward addresses with incorrect network IDs
+      (NonEmptySet AccountAddress) -- the set of account addresses with incorrect network IDs
   | OutputTooSmallUTxO
-      [TxOut era] -- list of supplied transaction outputs that are too small
+      (NonEmpty (TxOut era)) -- list of supplied transaction outputs that are too small
   | UpdateFailure (EraRuleFailure "PPUP" era) -- Subtransition Failures
   | OutputBootAddrAttrsTooBig
-      [TxOut era] -- list of supplied bad transaction outputs
+      (NonEmpty (TxOut era)) -- list of supplied bad transaction outputs
   deriving (Generic)
 
 type instance EraRuleFailure "UTXO" ShelleyEra = ShelleyUtxoPredFailure ShelleyEra
@@ -470,7 +468,7 @@ validateBadInputsUTxO ::
   Set TxIn ->
   Test (ShelleyUtxoPredFailure era)
 validateBadInputsUTxO utxo inputs =
-  failureUnless (Set.null badInputs) $ BadInputsUTxO badInputs
+  failureOnNonEmptySet badInputs BadInputsUTxO
   where
     {- inputs ➖ dom utxo -}
     badInputs = Set.filter (`Map.notMember` unUTxO utxo) inputs
@@ -484,7 +482,7 @@ validateWrongNetwork ::
   f (TxOut era) ->
   Test (ShelleyUtxoPredFailure era)
 validateWrongNetwork netId outputs =
-  failureUnless (null addrsWrongNetwork) $ WrongNetwork netId (Set.fromList addrsWrongNetwork)
+  failureOnNonEmptySet addrsWrongNetwork (WrongNetwork netId)
   where
     addrsWrongNetwork =
       filter
@@ -500,12 +498,11 @@ validateWrongNetworkWithdrawal ::
   TxBody t era ->
   Test (ShelleyUtxoPredFailure era)
 validateWrongNetworkWithdrawal netId txb =
-  failureUnless (null withdrawalsWrongNetwork) $
-    WrongNetworkWithdrawal netId (Set.fromList withdrawalsWrongNetwork)
+  failureOnNonEmptySet withdrawalsWrongNetwork (WrongNetworkWithdrawal netId)
   where
     withdrawalsWrongNetwork =
       filter
-        (\a -> raNetwork a /= netId)
+        (\a -> aaNetworkId a /= netId)
         (Map.keys . unWithdrawals $ txb ^. withdrawalsTxBodyL)
 
 -- | Ensure that value consumed and produced matches up exactly
@@ -534,7 +531,7 @@ validateOutputTooSmallUTxO ::
   f (TxOut era) ->
   Test (ShelleyUtxoPredFailure era)
 validateOutputTooSmallUTxO pp outputs =
-  failureUnless (null outputsTooSmall) $ OutputTooSmallUTxO outputsTooSmall
+  failureOnNonEmpty outputsTooSmall OutputTooSmallUTxO
   where
     -- minUTxOValue deposit comparison done as Coin because this rule is correct
     -- strictly in the Shelley era (in ShelleyMA we additionally check that all
@@ -553,7 +550,7 @@ validateOutputBootAddrAttrsTooBig ::
   f (TxOut era) ->
   Test (ShelleyUtxoPredFailure era)
 validateOutputBootAddrAttrsTooBig outputs =
-  failureUnless (null outputsAttrsTooBig) $ OutputBootAddrAttrsTooBig outputsAttrsTooBig
+  failureOnNonEmpty outputsAttrsTooBig OutputBootAddrAttrsTooBig
   where
     outputsAttrsTooBig =
       filter

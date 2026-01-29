@@ -9,6 +9,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -26,11 +27,14 @@ module Cardano.Ledger.Conway.Rules.Gov (
   GovSignal (..),
   ConwayGovEvent (..),
   ConwayGovPredFailure (..),
+  pattern InvalidPolicyHash,
   unelectedCommitteeVoters,
   conwayGovTransition,
+  checkGuardrailsScriptHash,
+  checkPolicy,
 ) where
 
-import Cardano.Ledger.Address (RewardAccount, raCredential, raNetwork)
+import Cardano.Ledger.Address (accountAddressCredentialL)
 import Cardano.Ledger.BaseTypes (
   EpochInterval (..),
   EpochNo (..),
@@ -118,6 +122,8 @@ import Control.State.Transition.Extended (
   failBecause,
   failOnJust,
   failOnNonEmpty,
+  failOnNonEmptyMap,
+  failOnNonEmptySet,
   failureOnNonEmpty,
   judgmentContext,
   liftSTS,
@@ -128,12 +134,14 @@ import Data.Bifunctor (bimap)
 import Data.Either (partitionEithers)
 import qualified Data.Foldable as F
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Map.NonEmpty (NonEmptyMap)
 import qualified Data.Map.Strict as Map
 import qualified Data.OSet.Strict as OSet
 import Data.Pulse (foldlM')
 import qualified Data.Sequence.Strict as SSeq
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Set.NonEmpty (NonEmptySet)
 import GHC.Generics (Generic)
 import Lens.Micro
 import qualified Lens.Micro as L
@@ -144,7 +152,7 @@ data GovEnv era = GovEnv
   { geTxId :: TxId
   , geEpoch :: EpochNo
   , gePParams :: PParams era
-  , gePPolicy :: StrictMaybe ScriptHash
+  , geGuardrailsScriptHash :: StrictMaybe ScriptHash
   , geCertState :: CertState era
   , geCommittee :: StrictMaybe (Committee era)
   }
@@ -158,7 +166,7 @@ instance (EraGov era, EraPParams era, EraCertState era) => EncCBOR (GovEnv era) 
             !> To geTxId
             !> To geEpoch
             !> To gePParams
-            !> To gePPolicy
+            !> To geGuardrailsScriptHash
             !> To geCertState
             !> To geCommittee
 
@@ -171,8 +179,8 @@ deriving instance (Eq (PParams era), EraCertState era) => Eq (GovEnv era)
 data ConwayGovPredFailure era
   = GovActionsDoNotExist (NonEmpty GovActionId)
   | MalformedProposal (GovAction era)
-  | ProposalProcedureNetworkIdMismatch RewardAccount Network
-  | TreasuryWithdrawalsNetworkIdMismatch (Set.Set RewardAccount) Network
+  | ProposalProcedureNetworkIdMismatch AccountAddress Network
+  | TreasuryWithdrawalsNetworkIdMismatch (NonEmptySet AccountAddress) Network
   | ProposalDepositIncorrect (Mismatch RelEQ Coin)
   | -- | Some governance actions are not allowed to be voted on by certain types of
     -- Voters. This failure lists all governance action ids with their respective voters
@@ -180,10 +188,10 @@ data ConwayGovPredFailure era
     DisallowedVoters (NonEmpty (Voter, GovActionId))
   | ConflictingCommitteeUpdate
       -- | Credentials that are mentioned as members to be both removed and added
-      (Set.Set (Credential ColdCommitteeRole))
+      (NonEmptySet (Credential ColdCommitteeRole))
   | ExpirationEpochTooSmall
       -- | Members for which the expiration epoch has already been reached
-      (Map.Map (Credential ColdCommitteeRole) EpochNo)
+      (NonEmptyMap (Credential ColdCommitteeRole) EpochNo)
   | InvalidPrevGovActionId (ProposalProcedure era)
   | VotingOnExpiredGovAction (NonEmpty (Voter, GovActionId))
   | ProposalCantFollow
@@ -191,10 +199,10 @@ data ConwayGovPredFailure era
       (StrictMaybe (GovPurposeId 'HardForkPurpose))
       -- | Its protocol version and the protocal version of the previous gov-action pointed to by the proposal
       (Mismatch RelGT ProtVer)
-  | InvalidPolicyHash
-      -- | The policy script hash in the proposal
+  | InvalidGuardrailsScriptHash
+      -- | The guardrails script hash in the proposal
       (StrictMaybe ScriptHash)
-      -- | The policy script hash of the current constitution
+      -- | The guardrails script hash of the current constitution
       (StrictMaybe ScriptHash)
   | DisallowedProposalDuringBootstrap (ProposalProcedure era)
   | DisallowedVotesDuringBootstrap
@@ -203,19 +211,26 @@ data ConwayGovPredFailure era
     VotersDoNotExist (NonEmpty Voter)
   | -- | Treasury withdrawals that sum up to zero are not allowed
     ZeroTreasuryWithdrawals (GovAction era)
-  | -- | Proposals that have an invalid reward account for returns of the deposit
-    ProposalReturnAccountDoesNotExist RewardAccount
-  | -- | Treasury withdrawal proposals to an invalid reward account
-    TreasuryWithdrawalReturnAccountsDoNotExist (NonEmpty RewardAccount)
+  | -- | Proposals that have an invalid account address for returns of the deposit
+    ProposalReturnAccountDoesNotExist AccountAddress
+  | -- | Treasury withdrawal proposals to an invalid account address
+    TreasuryWithdrawalReturnAccountsDoNotExist (NonEmpty AccountAddress)
   | -- | Disallow votes by unelected committee members
     UnelectedCommitteeVoters (NonEmpty (Credential HotCommitteeRole))
   deriving (Eq, Show, Generic)
+
+{-# DEPRECATED InvalidPolicyHash "In favor of `InvalidGuardrailsScriptHash`" #-}
+pattern InvalidPolicyHash ::
+  StrictMaybe ScriptHash -> StrictMaybe ScriptHash -> ConwayGovPredFailure era
+pattern InvalidPolicyHash got expected = InvalidGuardrailsScriptHash got expected
 
 type instance EraRuleFailure "GOV" ConwayEra = ConwayGovPredFailure ConwayEra
 
 type instance EraRuleEvent "GOV" ConwayEra = ConwayGovEvent ConwayEra
 
 instance InjectRuleFailure "GOV" ConwayGovPredFailure ConwayEra
+
+instance InjectRuleEvent "GOV" ConwayGovEvent ConwayEra
 
 instance EraPParams era => NFData (ConwayGovPredFailure era)
 
@@ -234,7 +249,7 @@ instance EraPParams era => DecCBOR (ConwayGovPredFailure era) where
     8 -> SumD InvalidPrevGovActionId <! From
     9 -> SumD VotingOnExpiredGovAction <! From
     10 -> SumD ProposalCantFollow <! From <! FromGroup
-    11 -> SumD InvalidPolicyHash <! From <! From
+    11 -> SumD InvalidGuardrailsScriptHash <! From <! From
     12 -> SumD DisallowedProposalDuringBootstrap <! From
     13 -> SumD DisallowedVotesDuringBootstrap <! From
     14 -> SumD VotersDoNotExist <! From
@@ -269,8 +284,8 @@ instance EraPParams era => EncCBOR (ConwayGovPredFailure era) where
         Sum VotingOnExpiredGovAction 9 !> To ga
       ProposalCantFollow prevgaid mm ->
         Sum ProposalCantFollow 10 !> To prevgaid !> ToGroup mm
-      InvalidPolicyHash got expected ->
-        Sum InvalidPolicyHash 11 !> To got !> To expected
+      InvalidGuardrailsScriptHash got expected ->
+        Sum InvalidGuardrailsScriptHash 11 !> To got !> To expected
       DisallowedProposalDuringBootstrap proposal ->
         Sum DisallowedProposalDuringBootstrap 12 !> To proposal
       DisallowedVotesDuringBootstrap votes ->
@@ -327,13 +342,13 @@ deriving instance (EraPParams era, Show (TxCert era)) => Show (GovSignal era)
 instance (EraPParams era, NFData (TxCert era)) => NFData (GovSignal era)
 
 instance
-  ( ConwayEraTxCert era
+  ( ConwayEraCertState era
+  , ConwayEraTxCert era
   , ConwayEraPParams era
   , ConwayEraGov era
   , EraRule "GOV" era ~ ConwayGOV era
   , InjectRuleFailure "GOV" ConwayGovPredFailure era
-  , EraCertState era
-  , ConwayEraCertState era
+  , InjectRuleEvent "GOV" ConwayGovEvent era
   ) =>
   STS (ConwayGOV era)
   where
@@ -346,7 +361,7 @@ instance
 
   initialRules = []
 
-  transitionRules = [conwayGovTransition @era]
+  transitionRules = [conwayGovTransition]
 
 checkVotesAreNotForExpiredActions ::
   EpochNo ->
@@ -412,13 +427,20 @@ mkGovActionState actionId proposal expiryInterval curEpoch =
     , gasExpiresAfter = addEpochInterval curEpoch expiryInterval
     }
 
+checkGuardrailsScriptHash ::
+  StrictMaybe ScriptHash ->
+  StrictMaybe ScriptHash ->
+  Test (ConwayGovPredFailure era)
+checkGuardrailsScriptHash expectedHash actualHash =
+  failureUnless (actualHash == expectedHash) $
+    InvalidGuardrailsScriptHash actualHash expectedHash
+
+{-# DEPRECATED checkPolicy "In favor of `checkGuardrailsScriptHash`" #-}
 checkPolicy ::
   StrictMaybe ScriptHash ->
   StrictMaybe ScriptHash ->
   Test (ConwayGovPredFailure era)
-checkPolicy expectedPolicyHash actualPolicyHash =
-  failureUnless (actualPolicyHash == expectedPolicyHash) $
-    InvalidPolicyHash actualPolicyHash expectedPolicyHash
+checkPolicy = checkGuardrailsScriptHash
 
 checkBootstrapProposal ::
   EraPParams era =>
@@ -431,20 +453,20 @@ checkBootstrapProposal pp proposal@ProposalProcedure {pProcGovAction}
   | otherwise = pure ()
 
 conwayGovTransition ::
-  forall era.
-  ( ConwayEraTxCert era
+  forall rule era.
+  ( ConwayEraCertState era
+  , ConwayEraTxCert era
   , ConwayEraPParams era
   , ConwayEraGov era
-  , STS (EraRule "GOV" era)
-  , Event (EraRule "GOV" era) ~ ConwayGovEvent era
-  , Signal (EraRule "GOV" era) ~ GovSignal era
-  , BaseM (EraRule "GOV" era) ~ ShelleyBase
-  , Environment (EraRule "GOV" era) ~ GovEnv era
-  , State (EraRule "GOV" era) ~ Proposals era
-  , InjectRuleFailure "GOV" ConwayGovPredFailure era
-  , ConwayEraCertState era
+  , STS (EraRule rule era)
+  , Signal (EraRule rule era) ~ GovSignal era
+  , BaseM (EraRule rule era) ~ ShelleyBase
+  , Environment (EraRule rule era) ~ GovEnv era
+  , State (EraRule rule era) ~ Proposals era
+  , InjectRuleFailure rule ConwayGovPredFailure era
+  , InjectRuleEvent rule ConwayGovEvent era
   ) =>
-  TransitionRule (EraRule "GOV" era)
+  TransitionRule (EraRule rule era)
 conwayGovTransition = do
   TRC
     ( GovEnv txid currentEpoch pp constitutionPolicy certState committee
@@ -494,13 +516,16 @@ conwayGovTransition = do
         unless (hardforkConwayBootstrapPhase $ pp ^. ppProtocolVersionL) $ do
           let refundAddress = proposal ^. pProcReturnAddrL
               govAction = proposal ^. pProcGovActionL
-          isAccountRegistered (raCredential refundAddress) (certDState ^. accountsL)
+          isAccountRegistered (refundAddress ^. accountAddressCredentialL) (certDState ^. accountsL)
             ?! (injectFailure . ProposalReturnAccountDoesNotExist) refundAddress
           case govAction of
             TreasuryWithdrawals withdrawals _ -> do
               let nonRegisteredAccounts =
                     flip Map.filterWithKey withdrawals $ \withdrawalAddress _ ->
-                      not $ isAccountRegistered (raCredential withdrawalAddress) (certDState ^. accountsL)
+                      not $
+                        isAccountRegistered
+                          (withdrawalAddress ^. accountAddressCredentialL)
+                          (certDState ^. accountsL)
               failOnNonEmpty
                 (Map.keys nonRegisteredAccounts)
                 (injectFailure . TreasuryWithdrawalReturnAccountsDoNotExist)
@@ -517,7 +542,7 @@ conwayGovTransition = do
                     }
 
         -- Return address network id check
-        raNetwork pProcReturnAddr
+        aaNetworkId pProcReturnAddr
           == expectedNetworkId
             ?! injectFailure (ProposalProcedureNetworkIdMismatch pProcReturnAddr expectedNetworkId)
 
@@ -525,24 +550,25 @@ conwayGovTransition = do
         case pProcGovAction of
           TreasuryWithdrawals wdrls proposalPolicy -> do
             let mismatchedAccounts =
-                  Set.filter ((/= expectedNetworkId) . raNetwork) $ Map.keysSet wdrls
-            Set.null mismatchedAccounts
-              ?! injectFailure (TreasuryWithdrawalsNetworkIdMismatch mismatchedAccounts expectedNetworkId)
+                  Set.filter ((/= expectedNetworkId) . aaNetworkId) $ Map.keysSet wdrls
+            failOnNonEmptySet
+              mismatchedAccounts
+              (\mismatched -> injectFailure (TreasuryWithdrawalsNetworkIdMismatch mismatched expectedNetworkId))
 
-            -- Policy check
-            runTest $ checkPolicy @era constitutionPolicy proposalPolicy
+            -- Guardrails script hash check
+            runTest $ checkGuardrailsScriptHash @era constitutionPolicy proposalPolicy
 
             unless (hardforkConwayBootstrapPhase $ pp ^. ppProtocolVersionL) $
               -- The sum of all withdrawals must be positive
               F.fold wdrls /= mempty ?! (injectFailure . ZeroTreasuryWithdrawals) pProcGovAction
           UpdateCommittee _mPrevGovActionId membersToRemove membersToAdd _qrm -> do
             let conflicting = Set.intersection (Map.keysSet membersToAdd) membersToRemove
-             in Set.null conflicting ?! (injectFailure . ConflictingCommitteeUpdate) conflicting
+             in failOnNonEmptySet conflicting (injectFailure . ConflictingCommitteeUpdate)
 
             let invalidMembers = Map.filter (<= currentEpoch) membersToAdd
-             in Map.null invalidMembers ?! (injectFailure . ExpirationEpochTooSmall) invalidMembers
+             in failOnNonEmptyMap invalidMembers (injectFailure . ExpirationEpochTooSmall)
           ParameterChange _ _ proposalPolicy ->
-            runTest $ checkPolicy @era constitutionPolicy proposalPolicy
+            runTest $ checkGuardrailsScriptHash @era constitutionPolicy proposalPolicy
           _ -> pure ()
 
         -- Ancestry checks and accept proposal
@@ -612,8 +638,8 @@ conwayGovTransition = do
            in mapProposals cleanupVoters
 
   -- Report the event
-  tellEvent $ GovNewProposals txid updatedProposalStates
-  tellEvent $ GovRemovedVotes txid replacedVotes unregisteredDReps
+  tellEvent $ injectEvent $ GovNewProposals txid updatedProposalStates
+  tellEvent $ injectEvent $ GovRemovedVotes txid replacedVotes unregisteredDReps
 
   pure updatedProposalStates
 

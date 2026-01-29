@@ -13,12 +13,12 @@ module Test.Cardano.Ledger.Babbage.Examples (
 
 import Cardano.Ledger.Alonzo.Scripts (AlonzoPlutusPurpose (..))
 import Cardano.Ledger.Alonzo.Translation ()
-import Cardano.Ledger.Babbage (BabbageEra)
+import Cardano.Ledger.Babbage (ApplyTxError (BabbageApplyTxError), BabbageEra)
 import Cardano.Ledger.Babbage.Core
 import Cardano.Ledger.Babbage.TxBody (BabbageTxOut (..), TxBody (..))
-import Cardano.Ledger.BaseTypes (StrictMaybe (..))
+import Cardano.Ledger.BaseTypes (Network (..), StrictMaybe (..))
 import Cardano.Ledger.Binary (mkSized)
-import Cardano.Ledger.Coin (Coin (..))
+import Cardano.Ledger.Coin (Coin (..), CompactForm (..))
 import Cardano.Ledger.Genesis (NoGenesis (..))
 import Cardano.Ledger.Mary.Value (MaryValue (..))
 import Cardano.Ledger.Plutus.Data (
@@ -26,18 +26,19 @@ import Cardano.Ledger.Plutus.Data (
   dataToBinaryData,
  )
 import Cardano.Ledger.Plutus.Language (Language (..))
-import Cardano.Ledger.Shelley.API (
-  ApplyTxError (..),
-  Network (..),
-  NewEpochState (..),
+import Cardano.Ledger.Shelley.LedgerState (NewEpochState (..))
+import Cardano.Ledger.Shelley.PParams (
   ProposedPPUpdates (..),
-  RewardAccount (..),
-  TxId (..),
   Update (..),
  )
-import Cardano.Ledger.Shelley.Rules (ShelleyDelegsPredFailure (..), ShelleyLedgerPredFailure (..))
+import Cardano.Ledger.Shelley.Rules (
+  ShelleyDelegPredFailure (DelegateeNotRegisteredDELEG),
+  ShelleyDelegsPredFailure (DelplFailure),
+  ShelleyDelplPredFailure (DelegFailure),
+  ShelleyLedgerPredFailure (DelegsFailure),
+ )
 import Cardano.Ledger.Shelley.Scripts
-import Cardano.Ledger.TxIn (mkTxInPartial)
+import Cardano.Ledger.TxIn (TxId (..), mkTxInPartial)
 import Cardano.Slotting.Slot (EpochNo (..), SlotNo (..))
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence.Strict as StrictSeq
@@ -62,10 +63,12 @@ import Test.Cardano.Ledger.Shelley.Examples (
 ledgerExamples :: LedgerExamples BabbageEra
 ledgerExamples =
   mkLedgerExamples
-    ( ApplyTxError $
+    ( BabbageApplyTxError $
         pure $
           DelegsFailure $
-            DelegateeNotRegisteredDELEG @BabbageEra (mkKeyHash 1)
+            DelplFailure $
+              DelegFailure $
+                DelegateeNotRegisteredDELEG @BabbageEra (mkKeyHash 1)
     )
     exampleBabbageNewEpochState
     exampleTxBabbage
@@ -80,7 +83,7 @@ exampleBabbageNewEpochState =
   exampleNewEpochState
     (exampleMultiAssetValue 1)
     emptyPParams
-    (emptyPParams & ppCoinsPerUTxOByteL .~ CoinPerByte (Coin 1))
+    (emptyPParams & ppCoinsPerUTxOByteL .~ CoinPerByte (CompactCoin 1))
 
 exampleTxBabbage :: Tx TopTx BabbageEra
 exampleTxBabbage =
@@ -109,7 +112,7 @@ exampleTxBodyBabbage =
     exampleCerts
     ( Withdrawals $
         Map.singleton
-          (RewardAccount Testnet (keyToCredential exampleStakeKey))
+          (AccountAddress Testnet (AccountId (keyToCredential exampleStakeKey)))
           (Coin 100)
     )
     (Coin 999) -- txfee

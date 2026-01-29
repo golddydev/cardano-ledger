@@ -5,7 +5,6 @@
 
 module Test.Cardano.Ledger.Shelley.Binary.CddlSpec (spec) where
 
-import Cardano.Ledger.Address (Addr, RewardAccount)
 import Cardano.Ledger.Core
 import Cardano.Ledger.Keys.Bootstrap (BootstrapWitness)
 import Cardano.Ledger.Shelley (ShelleyEra)
@@ -15,14 +14,9 @@ import Cardano.Ledger.Shelley.API (
   ProposedPPUpdates,
   Update,
  )
+import Cardano.Ledger.Shelley.HuddleSpec (shelleyCDDL)
 import Cardano.Ledger.State (StakePoolRelay)
 import Cardano.Ledger.TxIn (TxIn)
-import Test.Cardano.Ledger.Binary.Cddl (
-  beforeAllCddlFile,
-  cddlDecoderEquivalenceSpec,
-  cddlRoundTripAnnCborSpec,
-  cddlRoundTripCborSpec,
- )
 import Test.Cardano.Ledger.Binary.Cuddle (
   huddleDecoderEquivalenceSpec,
   huddleRoundTripAnnCborSpec,
@@ -32,49 +26,19 @@ import Test.Cardano.Ledger.Binary.Cuddle (
  )
 import Test.Cardano.Ledger.Common
 import Test.Cardano.Ledger.Shelley.Binary.Annotator ()
-import Test.Cardano.Ledger.Shelley.Binary.Cddl (readShelleyCddlFiles)
-import Test.Cardano.Ledger.Shelley.CDDL (shelleyCDDL)
 
 spec :: Spec
 spec =
   describe "CDDL" $ do
     let v = eraProtVerLow @ShelleyEra
-    describe "Ruby-based" $ beforeAllCddlFile 3 readShelleyCddlFiles $ do
-      cddlRoundTripAnnCborSpec @BootstrapWitness v "bootstrap_witness"
-      cddlRoundTripCborSpec @BootstrapWitness v "bootstrap_witness"
-      cddlRoundTripCborSpec @Addr v "address"
-      cddlRoundTripCborSpec @RewardAccount v "reward_account"
-      cddlRoundTripCborSpec @(Credential Staking) v "stake_credential"
-      cddlRoundTripAnnCborSpec @(TxBody TopTx ShelleyEra) v "transaction_body"
-      cddlRoundTripCborSpec @(TxBody TopTx ShelleyEra) v "transaction_body"
-      cddlRoundTripCborSpec @(TxOut ShelleyEra) v "transaction_output"
-      cddlRoundTripCborSpec @StakePoolRelay v "relay"
-      cddlRoundTripCborSpec @(TxCert ShelleyEra) v "certificate"
-      cddlRoundTripCborSpec @TxIn v "transaction_input"
-      cddlRoundTripAnnCborSpec @(TxAuxData ShelleyEra) v "metadata"
-      cddlRoundTripCborSpec @(TxAuxData ShelleyEra) v "metadata"
-      cddlRoundTripAnnCborSpec @(MultiSig ShelleyEra) v "native_script"
-      cddlRoundTripCborSpec @(MultiSig ShelleyEra) v "native_script"
-      cddlRoundTripCborSpec @(Update ShelleyEra) v "update"
-      cddlRoundTripCborSpec @(ProposedPPUpdates ShelleyEra) v "proposed_protocol_parameter_updates"
-      cddlRoundTripCborSpec @(PParamsUpdate ShelleyEra) v "protocol_param_update"
-      cddlRoundTripAnnCborSpec @(Tx TopTx ShelleyEra) v "transaction"
-      cddlRoundTripCborSpec @(Tx TopTx ShelleyEra) v "transaction"
-      describe "DecCBOR instances equivalence via CDDL" $ do
-        cddlDecoderEquivalenceSpec @BootstrapWitness v "bootstrap_witness"
-        cddlDecoderEquivalenceSpec @(TxBody TopTx ShelleyEra) v "transaction_body"
-        cddlDecoderEquivalenceSpec @(TxAuxData ShelleyEra) v "metadata"
-        cddlDecoderEquivalenceSpec @(MultiSig ShelleyEra) v "native_script"
-        cddlDecoderEquivalenceSpec @(Tx TopTx ShelleyEra) v "transaction"
-
-    describe "Huddle" $ specWithHuddle shelleyCDDL 100 $ do
+    specWithHuddle shelleyCDDL 100 $ do
       huddleRoundTripCborSpec @Addr v "address"
       -- TODO re-enable this once we've removed the hard-coded definition for `address`
       xdescribe "bad CDDL" $ huddleRoundTripArbitraryValidate @Addr v "address"
       huddleRoundTripAnnCborSpec @BootstrapWitness v "bootstrap_witness"
       huddleRoundTripArbitraryValidate @BootstrapWitness v "bootstrap_witness"
       huddleRoundTripCborSpec @BootstrapWitness v "bootstrap_witness"
-      huddleRoundTripCborSpec @RewardAccount v "reward_account"
+      huddleRoundTripCborSpec @AccountAddress v "reward_account"
       huddleRoundTripCborSpec @(Credential Staking) v "stake_credential"
       huddleRoundTripAnnCborSpec @(TxBody TopTx ShelleyEra) v "transaction_body"
       huddleRoundTripCborSpec @(TxBody TopTx ShelleyEra) v "transaction_body"

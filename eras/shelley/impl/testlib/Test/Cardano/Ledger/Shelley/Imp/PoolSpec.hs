@@ -8,7 +8,6 @@
 module Test.Cardano.Ledger.Shelley.Imp.PoolSpec (spec) where
 
 import Cardano.Crypto.Hash.Class (sizeHash)
-import Cardano.Ledger.Address (RewardAccount (..))
 import Cardano.Ledger.BaseTypes
 import Cardano.Ledger.Coin
 import Cardano.Ledger.Core
@@ -19,7 +18,7 @@ import Cardano.Ledger.State
 import Data.Map.Strict as Map
 import Data.Proxy
 import Lens.Micro
-import Test.Cardano.Ledger.Binary.Arbitrary (genByteString)
+import Test.Cardano.Ledger.Binary.Arbitrary (genByteArray)
 import Test.Cardano.Ledger.Imp.Common
 import Test.Cardano.Ledger.Shelley.ImpTest
 
@@ -36,16 +35,16 @@ spec = describe "POOL" $ do
         tx
         [injectFailure $ StakePoolCostTooLowPOOL $ Mismatch tooLowCost minPoolCost]
 
-    it "register a pool with a reward account having the wrong network id" $ do
+    it "register a pool with a staking address having the wrong network id" $ do
       pv <- getsPParams ppProtocolVersionL
-      rewardCredential <- KeyHashObj <$> freshKeyHash
-      let badRewardAccount =
-            RewardAccount
-              { raNetwork = Mainnet
-              , raCredential = rewardCredential
+      accountCredential <- KeyHashObj <$> freshKeyHash
+      let badAccountAddress =
+            AccountAddress
+              { aaNetworkId = Mainnet
+              , aaAccountId = AccountId accountCredential
               }
       kh <- freshKeyHash
-      pps <- freshPoolParams kh badRewardAccount
+      pps <- freshPoolParams kh badAccountAddress
       let tx = registerPoolTx pps
       if pvMajor pv < natVersion @5
         then
@@ -57,7 +56,7 @@ spec = describe "POOL" $ do
       pv <- getsPParams ppProtocolVersionL
       let maxMetadataSize = sizeHash (Proxy :: Proxy HASH)
       tooBigSize <- choose (maxMetadataSize + 1, maxMetadataSize + 50)
-      metadataHash <- liftGen $ genByteString $ fromIntegral tooBigSize
+      metadataHash <- liftGen $ genByteArray $ fromIntegral tooBigSize
       url <- arbitrary
       let metadata = PoolMetadata url metadataHash
       (kh, vrf) <- (,) <$> freshKeyHash <*> freshKeyHashVRF
@@ -402,6 +401,6 @@ spec = describe "POOL" $ do
       VRFVerKeyHash StakePoolVRF ->
       ImpTestM era StakePoolParams
     poolParams kh vrf = do
-      pps <- registerRewardAccount >>= freshPoolParams kh
+      pps <- registerAccountAddress >>= freshPoolParams kh
       pure $ pps & sppVrfL .~ vrf
     getPState = getsNES @era $ nesEsL . esLStateL . lsCertStateL . certPStateL

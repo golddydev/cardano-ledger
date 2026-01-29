@@ -23,7 +23,6 @@ import Cardano.Ledger.Shelley.LedgerState
 import Cardano.Ledger.Shelley.Rules (Event, ShelleyTickEvent (..))
 import Cardano.Ledger.Val (zero, (<->))
 import Control.Monad (forM)
-import Control.Monad.Writer (listen)
 import Data.Default (def)
 import Data.Foldable as F (foldl', traverse_)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -65,7 +64,7 @@ treasuryWithdrawalsSpec =
   describe "Treasury withdrawals" $ do
     -- Treasury withdrawals are disallowed in bootstrap, so we're running these tests only post-bootstrap
     it "Modify EnactState as expected" $ whenPostBootstrap $ do
-      rewardAcount1 <- registerRewardAccount
+      rewardAcount1 <- registerAccountAddress
       govActionId <- submitTreasuryWithdrawals [(rewardAcount1, Coin 666)]
       gas <- getGovActionState govActionId
       let govAction = gasAction gas
@@ -80,9 +79,10 @@ treasuryWithdrawalsSpec =
               { ensTreasury = Coin 1000
               }
       enactState' <- runImpRule @"ENACT" () enactState signal
-      ensWithdrawals enactState' `shouldBe` [(raCredential rewardAcount1, Coin 666)]
+      ensWithdrawals enactState'
+        `shouldBe` [(rewardAcount1 ^. accountAddressCredentialL, Coin 666)]
 
-      rewardAcount2 <- registerRewardAccount
+      rewardAcount2 <- registerAccountAddress
       let withdrawals' =
             [ (rewardAcount1, Coin 111)
             , (rewardAcount2, Coin 222)
@@ -99,8 +99,8 @@ treasuryWithdrawalsSpec =
       enactState'' <- runImpRule @"ENACT" () enactState' signal'
 
       ensWithdrawals enactState''
-        `shouldBe` [ (raCredential rewardAcount1, Coin 777)
-                   , (raCredential rewardAcount2, Coin 222)
+        `shouldBe` [ (rewardAcount1 ^. accountAddressCredentialL, Coin 777)
+                   , (rewardAcount2 ^. accountAddressCredentialL, Coin 222)
                    ]
       ensTreasury enactState'' `shouldBe` Coin 1
 
@@ -124,7 +124,7 @@ treasuryWithdrawalsSpec =
         submitTx_ tx
       passNEpochs 2
       getsNES treasuryL `shouldReturn` zero
-      sumRewardAccounts withdrawals `shouldReturn` sumRequested
+      sumAccountBalances withdrawals `shouldReturn` sumRequested
 
     it "Withdrawals exceeding maxBound Word64 submitted in a single proposal" $ whenPostBootstrap $ do
       disableTreasuryExpansion
@@ -169,15 +169,15 @@ treasuryWithdrawalsSpec =
 
             getsNES treasuryL `shouldReturn` expectedTreasury
             -- check that the sum of the rewards matches what was spent from the treasury
-            sumRewardAccounts withdrawals `shouldReturn` (initialTreasury <-> expectedTreasury)
+            sumAccountBalances withdrawals `shouldReturn` (initialTreasury <-> expectedTreasury)
   where
-    sumRewardAccounts withdrawals = mconcat <$> traverse (getAccountBalance . fst) withdrawals
+    sumAccountBalances withdrawals = mconcat <$> traverse (getAccountBalance . fst) withdrawals
     genWithdrawalsExceeding (Coin val) n = do
       vals <- genValuesExceeding val n
-      forM (Coin <$> vals) $ \coin -> (,coin) <$> registerRewardAccount
+      forM (Coin <$> vals) $ \coin -> (,coin) <$> registerAccountAddress
     checkNoWithdrawal initialTreasury withdrawals = do
       getsNES treasuryL `shouldReturn` initialTreasury
-      sumRewardAccounts withdrawals `shouldReturn` zero
+      sumAccountBalances withdrawals `shouldReturn` zero
     genValuesExceeding val n = do
       pcts <- replicateM (n - 1) $ choose (1, 100)
       let tot = sum pcts
@@ -214,18 +214,18 @@ hardForkInitiationSpec =
     submitYesVote_ (DRepVoter dRep1) govActionId
     submitYesVote_ (StakePoolVoter stakePoolId1) govActionId
     passNEpochs 2
-      & listen
-      >>= expectHardForkEvents . snd <*> pure []
+      & impEventsFrom
+      >>= expectHardForkEvents <*> pure []
     getProtVer `shouldReturn` curProtVer
     submitYesVote_ (DRepVoter dRep2) govActionId
     passNEpochs 2
-      & listen
-      >>= expectHardForkEvents . snd <*> pure []
+      & impEventsFrom
+      >>= expectHardForkEvents <*> pure []
     getProtVer `shouldReturn` curProtVer
     submitYesVote_ (StakePoolVoter stakePoolId2) govActionId
     passNEpochs 2
-      & listen
-      >>= expectHardForkEvents . snd
+      & impEventsFrom
+      >>= expectHardForkEvents
         <*> pure
           [ SomeSTSEvent @era @"TICK" . injectEvent $ ConwayHardForkEvent nextProtVer
           ]
@@ -255,13 +255,13 @@ hardForkInitiationNoDRepsSpec =
     submitYesVoteCCs_ committeeMembers' govActionId
     submitYesVote_ (StakePoolVoter stakePoolId1) govActionId
     passNEpochs 2
-      & listen
-      >>= expectHardForkEvents . snd <*> pure []
+      & impEventsFrom
+      >>= expectHardForkEvents <*> pure []
     getProtVer `shouldReturn` curProtVer
     submitYesVote_ (StakePoolVoter stakePoolId2) govActionId
     passNEpochs 2
-      & listen
-      >>= expectHardForkEvents . snd
+      & impEventsFrom
+      >>= expectHardForkEvents
         <*> pure
           [ SomeSTSEvent @era @"TICK" . injectEvent $ ConwayHardForkEvent nextProtVer
           ]
@@ -436,7 +436,7 @@ actionPrioritySpec =
 
     -- distinct constitutional values for minFee
     let genMinFeeVals =
-          (\x y z -> (Coin x, Coin y, Coin z))
+          (\x y z -> (CoinPerByte $ CompactCoin x, CoinPerByte $ CompactCoin y, CoinPerByte $ CompactCoin z))
             <$> uniformRM (30, 330)
             <*> uniformRM (330, 660)
             <*> uniformRM (660, 1000)
@@ -451,15 +451,15 @@ actionPrioritySpec =
       pGai0 <-
         submitParameterChange
           SNothing
-          $ def & ppuMinFeeAL .~ SJust val1
+          $ def & ppuTxFeePerByteL .~ SJust val1
       pGai1 <-
         submitParameterChange
           (SJust pGai0)
-          $ def & ppuMinFeeAL .~ SJust val2
+          $ def & ppuTxFeePerByteL .~ SJust val2
       pGai2 <-
         submitParameterChange
           (SJust pGai1)
-          $ def & ppuMinFeeAL .~ SJust val3
+          $ def & ppuTxFeePerByteL .~ SJust val3
       traverse_ @[]
         ( \gaid -> do
             submitYesVote_ (StakePoolVoter spoC) gaid
@@ -470,7 +470,7 @@ actionPrioritySpec =
       getLastEnactedParameterChange
         `shouldReturn` SJust (GovPurposeId pGai2)
       expectNoCurrentProposals
-      getsNES (nesEsL . curPParamsEpochStateL . ppMinFeeAL)
+      getsNES (nesEsL . curPParamsEpochStateL . ppTxFeePerByteL)
         `shouldReturn` val3
 
     it "only the first action of a transaction gets enacted" $ do
@@ -486,15 +486,15 @@ actionPrioritySpec =
           NE.fromList
             [ ParameterChange
                 SNothing
-                (def & ppuMinFeeAL .~ SJust val1)
+                (def & ppuTxFeePerByteL .~ SJust val1)
                 policy
             , ParameterChange
                 SNothing
-                (def & ppuMinFeeAL .~ SJust val2)
+                (def & ppuTxFeePerByteL .~ SJust val2)
                 policy
             , ParameterChange
                 SNothing
-                (def & ppuMinFeeAL .~ SJust val3)
+                (def & ppuTxFeePerByteL .~ SJust val3)
                 policy
             ]
       traverse_
@@ -504,7 +504,7 @@ actionPrioritySpec =
         )
         gaids
       passNEpochs 2
-      getsNES (nesEsL . curPParamsEpochStateL . ppMinFeeAL)
+      getsNES (nesEsL . curPParamsEpochStateL . ppTxFeePerByteL)
         `shouldReturn` val1
       expectNoCurrentProposals
 

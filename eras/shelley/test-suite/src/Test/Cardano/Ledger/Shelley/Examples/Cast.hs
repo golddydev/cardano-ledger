@@ -38,7 +38,7 @@ module Test.Cardano.Ledger.Shelley.Examples.Cast (
   dariaAddr,
 ) where
 
-import Cardano.Ledger.Address (Addr (..), RewardAccount (..))
+import Cardano.Ledger.Address (AccountAddress (..), AccountId (..), Addr (..))
 import Cardano.Ledger.BaseTypes (
   Network (..),
   StrictMaybe (..),
@@ -61,9 +61,9 @@ import Cardano.Ledger.State (
  )
 import Cardano.Protocol.Crypto (hashVerKeyVRF)
 import Cardano.Protocol.TPraos.OCert (KESPeriod (..))
-import qualified Data.ByteString.Char8 as BS (pack)
 import qualified Data.List.NonEmpty as NE
 import Data.Maybe (fromJust)
+import Data.MemPack.Buffer (byteArrayFromShortByteString)
 import qualified Data.Sequence.Strict as StrictSeq
 import qualified Data.Set as Set
 import Test.Cardano.Ledger.Core.KeyPair (KeyPair (..), mkAddr, mkCredential)
@@ -128,14 +128,14 @@ aliceStakePoolParams =
     , sppPledge = Coin 1
     , sppCost = Coin 5
     , sppMargin = unsafeBoundRational 0.1
-    , sppRewardAccount = RewardAccount Testnet aliceSHK
+    , sppAccountAddress = AccountAddress Testnet (AccountId aliceSHK)
     , sppOwners = Set.singleton $ (hashKey . vKey) aliceStake
     , sppRelays = StrictSeq.empty
     , sppMetadata =
         SJust $
           PoolMetadata
             { pmUrl = fromJust $ textToUrl 64 "alice.pool"
-            , pmHash = BS.pack "{}"
+            , pmHash = byteArrayFromShortByteString "{}"
             }
     }
 
@@ -183,7 +183,7 @@ bobStakePoolParams =
     , sppPledge = Coin 2
     , sppCost = Coin 1
     , sppMargin = unsafeBoundRational 0.1
-    , sppRewardAccount = RewardAccount Testnet bobSHK
+    , sppAccountAddress = AccountAddress Testnet (AccountId bobSHK)
     , sppOwners = Set.singleton $ hashKey (vKey bobStake)
     , sppRelays = StrictSeq.empty
     , sppMetadata = SNothing

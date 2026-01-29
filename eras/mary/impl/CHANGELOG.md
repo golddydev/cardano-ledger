@@ -2,6 +2,7 @@
 
 ## 1.10.0.0
 
+* Add `MaryApplyTxError` constructor for `ApplyTxError era`
 * Add `cddl` sub-library, and `generate-cddl` executable.
 * Remove deprecated functions `insert`, `lookup`, `prune`
 * Remove deprecated type `Mary`
@@ -12,10 +13,14 @@
 
 ### `cddl`
 
+* Move `cddl-files` to `cddl/data`.
+* Export `assetNameRule` for reuse.
+* Rename 'multiasset' to `maryMultiasset`
 * Add full `HuddleSpec`.
 
 ### `testlib`
 
+* Remove `huddle-cddl` and the `CDDL` modules.
 * Use fixed-sized `uint .size 8` for `slot` in CDDL for transaction validity intervals
 
 ## 1.9.0.0

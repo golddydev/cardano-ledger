@@ -44,7 +44,6 @@ module Test.Cardano.Ledger.Alonzo.ImpTest (
   alonzoFixupFees,
 ) where
 
-import Cardano.Ledger.Address (Addr (..))
 import Cardano.Ledger.Alonzo (AlonzoEra)
 import Cardano.Ledger.Alonzo.Core
 import Cardano.Ledger.Alonzo.Genesis (AlonzoGenesis (..))
@@ -55,6 +54,7 @@ import Cardano.Ledger.Alonzo.Plutus.Evaluate (
   evalTxExUnits,
  )
 import Cardano.Ledger.Alonzo.Rules (
+  AlonzoBbodyPredFailure,
   AlonzoUtxoPredFailure,
   AlonzoUtxosPredFailure (..),
   AlonzoUtxowPredFailure,
@@ -93,6 +93,7 @@ import Cardano.Ledger.Shelley.LedgerState (
 import Cardano.Ledger.Shelley.UTxO (EraUTxO (..), ScriptsProvided (..), UTxO (..), txouts)
 import Cardano.Ledger.TxIn (TxIn)
 import Control.Monad (forM)
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.MapExtras (fromElems)
@@ -127,6 +128,7 @@ class
   , InjectRuleFailure "LEDGER" AlonzoUtxosPredFailure era
   , InjectRuleFailure "LEDGER" AlonzoUtxowPredFailure era
   , InjectRuleFailure "LEDGER" AlonzoUtxoPredFailure era
+  , InjectRuleFailure "BBODY" AlonzoBbodyPredFailure era
   ) =>
   AlonzoEraImp era
   where
@@ -426,8 +428,8 @@ instance ShelleyEraImp AlonzoEra where
               }
         , agMaxBlockExUnits =
             ExUnits
-              { exUnitsMem = 50_000_000
-              , exUnitsSteps = 40_000_000_000
+              { exUnitsMem = 200_000_000
+              , exUnitsSteps = 200_000_000_000
               }
         , agMaxValSize = 5000
         , agCollateralPercentage = 150
@@ -473,7 +475,8 @@ impPlutusWithContexts tx = do
   utxo <- getUTxO
   case collectPlutusScriptsWithContext (epochInfo globals) (systemStart globals) pp tx utxo of
     Left errs ->
-      assertFailure $ "Did not expect to get context translation failures: " ++ unlines (map show errs)
+      assertFailure $
+        "Did not expect to get context translation failures: " ++ unlines (map show $ NonEmpty.toList errs)
     Right pwcs -> pure pwcs
 
 impScriptPredicateFailure ::

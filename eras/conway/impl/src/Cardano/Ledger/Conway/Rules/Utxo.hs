@@ -23,7 +23,6 @@ module Cardano.Ledger.Conway.Rules.Utxo (
   UtxoEnv (..),
 ) where
 
-import Cardano.Ledger.Address (Addr, RewardAccount)
 import Cardano.Ledger.Allegra.Rules (AllegraUtxoPredFailure, shelleyToAllegraUtxoPredFailure)
 import qualified Cardano.Ledger.Allegra.Rules as Allegra (AllegraUtxoPredFailure (..))
 import Cardano.Ledger.Alonzo.Rules (
@@ -69,12 +68,13 @@ import Cardano.Ledger.Plutus (ExUnits)
 import qualified Cardano.Ledger.Shelley.LedgerState as Shelley (UTxOState)
 import Cardano.Ledger.Shelley.Rules (ShelleyUtxoPredFailure, UtxoEnv (..))
 import qualified Cardano.Ledger.Shelley.Rules as Shelley (UtxoEnv, validSizeComputationCheck)
-import Cardano.Ledger.State (EraCertState (..), EraUTxO, UTxO (..))
+import Cardano.Ledger.State (EraCertState (..), EraUTxO)
 import Cardano.Ledger.TxIn (TxIn)
 import Control.DeepSeq (NFData)
 import Control.State.Transition.Extended (Embed (..), STS (..))
 import Data.List.NonEmpty (NonEmpty)
-import Data.Set (Set)
+import Data.Map.NonEmpty (NonEmptyMap)
+import Data.Set.NonEmpty (NonEmptySet)
 import Data.Word (Word32)
 import GHC.Generics (Generic)
 import GHC.Natural (Natural)
@@ -88,7 +88,7 @@ data ConwayUtxoPredFailure era
     UtxosFailure (PredicateFailure (EraRule "UTXOS" era))
   | -- | The bad transaction inputs
     BadInputsUTxO
-      (Set TxIn)
+      (NonEmptySet TxIn)
   | OutsideValidityIntervalUTxO
       -- | transaction's validity interval
       ValidityInterval
@@ -105,21 +105,21 @@ data ConwayUtxoPredFailure era
       -- | the expected network id
       Network
       -- | the set of addresses with incorrect network IDs
-      (Set Addr)
+      (NonEmptySet Addr)
   | WrongNetworkWithdrawal
       -- | the expected network id
       Network
       -- | the set of reward addresses with incorrect network IDs
-      (Set RewardAccount)
+      (NonEmptySet AccountAddress)
   | -- | list of supplied transaction outputs that are too small
     OutputTooSmallUTxO
-      [TxOut era]
+      (NonEmpty (TxOut era))
   | -- | list of supplied bad transaction outputs
     OutputBootAddrAttrsTooBig
-      [TxOut era]
+      (NonEmpty (TxOut era))
   | -- | list of supplied bad transaction output triples (actualSize,PParameterMaxValue,TxOut)
     OutputTooBigUTxO
-      [(Int, Int, TxOut era)]
+      (NonEmpty (Int, Int, TxOut era))
   | InsufficientCollateral
       -- | balance computed
       DeltaCoin
@@ -127,7 +127,7 @@ data ConwayUtxoPredFailure era
       Coin
   | -- | The UTxO entries which have the wrong kind of script
     ScriptsNotPaidUTxO
-      (UTxO era)
+      (NonEmptyMap TxIn (TxOut era))
   | ExUnitsTooBigUTxO
       (Mismatch RelLTEQ ExUnits) -- The values are serialised in reverse order
   | -- | The inputs marked for use as fees contain non-ADA tokens
@@ -151,7 +151,7 @@ data ConwayUtxoPredFailure era
   | -- | list of supplied transaction outputs that are too small,
     -- together with the minimum value for the given output.
     BabbageOutputTooSmallUTxO
-      [(TxOut era, Coin)]
+      (NonEmpty (TxOut era, Coin))
   | -- | TxIns that appear in both inputs and reference inputs
     BabbageNonDisjointRefInputs
       (NonEmpty TxIn)
@@ -395,7 +395,7 @@ allegraToConwayUtxoPredFailure = \case
   Allegra.OutputTooSmallUTxO x -> OutputTooSmallUTxO x
   Allegra.UpdateFailure x -> absurdEraRule @"PPUP" @era x
   Allegra.OutputBootAddrAttrsTooBig xs -> OutputBootAddrAttrsTooBig xs
-  Allegra.OutputTooBigUTxO xs -> OutputTooBigUTxO (map (0,0,) xs)
+  Allegra.OutputTooBigUTxO xs -> OutputTooBigUTxO (fmap (0,0,) xs)
 
 instance InjectRuleFailure "UTXO" ConwayUtxosPredFailure ConwayEra where
   injectFailure = UtxosFailure

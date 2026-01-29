@@ -10,7 +10,7 @@
 {-# LANGUAGE TypeApplications #-}
 
 -- | Example demonstrating a particular delegation scenario involving
--- two pools. Both pools select a reward account which is *not*
+-- two pools. Both pools select a account address which is *not*
 -- a pool owner, and which delegates to one of the pools.
 module Test.Cardano.Ledger.Shelley.Examples.TwoPools (
   twoPoolsExample,
@@ -28,19 +28,21 @@ import Cardano.Ledger.BaseTypes (
   activeSlotVal,
   mkCertIxPartial,
   natVersion,
+  nonZeroOr,
   (⭒),
  )
 import Cardano.Ledger.Block (Block (blockHeader))
 import Cardano.Ledger.Coin (
   Coin (..),
-  CompactForm (CompactCoin),
   DeltaCoin (..),
   compactCoinOrError,
+  knownNonZeroCoin,
   rationalToCoinViaFloor,
   toDeltaCoin,
  )
 import Cardano.Ledger.Credential (Credential, Ptr (..), SlotNo32 (..))
 import Cardano.Ledger.Keys (asWitness, coerceKeyRole)
+import Cardano.Ledger.Rewards (Reward (..), RewardType (..))
 import Cardano.Ledger.Shelley
 import Cardano.Ledger.Shelley.Core
 import Cardano.Ledger.Shelley.LedgerState (
@@ -58,15 +60,14 @@ import Cardano.Ledger.Shelley.PoolRank (
 import Cardano.Ledger.Shelley.Rewards (
   StakeShare (..),
   aggregateRewards,
-  leaderRew,
-  memberRew,
+  calcStakePoolMemberReward,
+  calcStakePoolOperatorReward,
   mkApparentPerformance,
   sumRewards,
  )
 import Cardano.Ledger.Shelley.Tx (
   ShelleyTx (..),
  )
-import Cardano.Ledger.Shelley.TxBody (RewardAccount (..))
 import Cardano.Ledger.Shelley.TxOut (ShelleyTxOut (..))
 import Cardano.Ledger.Shelley.TxWits (
   addrWits,
@@ -97,6 +98,7 @@ import Data.Ratio ((%))
 import qualified Data.Sequence.Strict as StrictSeq
 import Data.Set (Set)
 import qualified Data.Set as Set
+import qualified Data.VMap as VMap
 import GHC.Stack (HasCallStack)
 import Lens.Micro ((&), (.~), (^.))
 import Test.Cardano.Ledger.Core.KeyPair (mkWitnessesVKey)
@@ -123,6 +125,7 @@ import Test.Cardano.Ledger.Shelley.Generator.Core (
  )
 import Test.Cardano.Ledger.Shelley.Generator.EraGen (genesisId)
 import Test.Cardano.Ledger.Shelley.Generator.ShelleyEraGen ()
+import Test.Cardano.Ledger.Shelley.Rewards (mkSnapShot)
 import Test.Cardano.Ledger.Shelley.Rules.Chain (ChainState (..))
 import Test.Cardano.Ledger.Shelley.Utils (
   epochSize,
@@ -171,10 +174,10 @@ feeTx1 :: Coin
 feeTx1 = Coin 3
 
 aliceStakePoolParams' :: StakePoolParams
-aliceStakePoolParams' = Cast.aliceStakePoolParams {sppRewardAccount = RewardAccount Testnet Cast.carlSHK}
+aliceStakePoolParams' = Cast.aliceStakePoolParams {sppAccountAddress = AccountAddress Testnet (AccountId Cast.carlSHK)}
 
 bobStakePoolParams' :: StakePoolParams
-bobStakePoolParams' = Cast.bobStakePoolParams {sppRewardAccount = RewardAccount Testnet Cast.carlSHK}
+bobStakePoolParams' = Cast.bobStakePoolParams {sppAccountAddress = AccountAddress Testnet (AccountId Cast.carlSHK)}
 
 txbodyEx1 :: TxBody TopTx ShelleyEra
 txbodyEx1 =
@@ -311,23 +314,24 @@ blockEx3 =
 
 snapEx3 :: SnapShot
 snapEx3 =
-  SnapShot
-    { ssStake =
-        mkStake
-          [ (Cast.aliceSHK, aliceCoinEx1)
-          , (Cast.bobSHK, bobInitCoin)
-          , (Cast.carlSHK, carlInitCoin)
-          ]
-    , ssDelegations =
-        [ (Cast.aliceSHK, aikColdKeyHash Cast.alicePoolKeys)
-        , (Cast.bobSHK, aikColdKeyHash Cast.bobPoolKeys)
-        , (Cast.carlSHK, aikColdKeyHash Cast.alicePoolKeys)
+  let
+    stake =
+      mkStake
+        [ (Cast.aliceSHK, aliceCoinEx1)
+        , (Cast.bobSHK, bobInitCoin)
+        , (Cast.carlSHK, carlInitCoin)
         ]
-    , ssPoolParams =
-        [ (aikColdKeyHash Cast.alicePoolKeys, aliceStakePoolParams')
-        , (aikColdKeyHash Cast.bobPoolKeys, bobStakePoolParams')
-        ]
-    }
+    delegations =
+      [ (Cast.aliceSHK, aikColdKeyHash Cast.alicePoolKeys)
+      , (Cast.bobSHK, aikColdKeyHash Cast.bobPoolKeys)
+      , (Cast.carlSHK, aikColdKeyHash Cast.alicePoolKeys)
+      ]
+    poolParams =
+      [ (aikColdKeyHash Cast.alicePoolKeys, aliceStakePoolParams')
+      , (aikColdKeyHash Cast.bobPoolKeys, bobStakePoolParams')
+      ]
+   in
+    mkSnapShot stake delegations poolParams
 
 expectedStEx3 :: ChainState ShelleyEra
 expectedStEx3 =
@@ -441,7 +445,7 @@ pdEx5 =
           )
         ]
     )
-    (CompactCoin $ fromIntegral activeStakeEx5)
+    (Coin activeStakeEx5 `nonZeroOr` knownNonZeroCoin @1)
 
 expectedStEx5 :: ChainState ShelleyEra
 expectedStEx5 =
@@ -634,17 +638,19 @@ alicePoolRewards = rationalToCoinViaFloor (appPerf * (fromIntegral . unCoin $ ma
 
 carlMemberRewardsFromAlice :: Coin
 carlMemberRewardsFromAlice =
-  memberRew
+  calcStakePoolMemberReward
     alicePoolRewards
-    aliceStakePoolParams'
+    (sppCost aliceStakePoolParams')
+    (sppMargin aliceStakePoolParams')
     (StakeShare $ unCoin carlInitCoin % circulation)
     (StakeShare aliceStakeShareTot)
 
 carlLeaderRewardsFromAlice :: Coin
 carlLeaderRewardsFromAlice =
-  leaderRew
+  calcStakePoolOperatorReward
     alicePoolRewards
-    aliceStakePoolParams'
+    (sppCost aliceStakePoolParams')
+    (sppMargin aliceStakePoolParams')
     (StakeShare $ unCoin aliceCoinEx1 % circulation)
     (StakeShare aliceStakeShareTot)
 
@@ -658,9 +664,10 @@ bobPoolRewards = rationalToCoinViaFloor (appPerf * (fromIntegral . unCoin $ maxP
 
 carlLeaderRewardsFromBob :: Coin
 carlLeaderRewardsFromBob =
-  leaderRew
+  calcStakePoolOperatorReward
     bobPoolRewards
-    bobStakePoolParams'
+    (sppCost bobStakePoolParams')
+    (sppMargin bobStakePoolParams')
     (StakeShare $ unCoin bobInitCoin % circulation)
     (StakeShare bobStakeShareTot)
 
@@ -681,7 +688,7 @@ bobPerfEx9 = likelihood blocks t (epochSize $ EpochNo 3)
 nonMyopicEx9 :: NonMyopic
 nonMyopicEx9 =
   NonMyopic
-    ( Map.fromList
+    ( VMap.fromList
         [ (aikColdKeyHash Cast.alicePoolKeys, alicePerfEx9)
         , (aikColdKeyHash Cast.bobPoolKeys, bobPerfEx9)
         ]

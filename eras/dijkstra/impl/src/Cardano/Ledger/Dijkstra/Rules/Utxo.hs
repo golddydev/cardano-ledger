@@ -21,10 +21,6 @@ module Cardano.Ledger.Dijkstra.Rules.Utxo (
   conwayToDijkstraUtxoPredFailure,
 ) where
 
-import Cardano.Ledger.Address (
-  Addr (..),
-  RewardAccount,
- )
 import Cardano.Ledger.Allegra.Rules (AllegraUtxoPredFailure, shelleyToAllegraUtxoPredFailure)
 import qualified Cardano.Ledger.Allegra.Rules as Allegra
 import Cardano.Ledger.Alonzo.Rules (
@@ -83,7 +79,6 @@ import qualified Cardano.Ledger.Shelley.Rules as Shelley (UtxoEnv, validSizeComp
 import Cardano.Ledger.State (
   EraCertState (..),
   EraUTxO,
-  UTxO (..),
  )
 import Cardano.Ledger.TxIn (TxIn)
 import Control.DeepSeq (NFData)
@@ -98,7 +93,8 @@ import Control.State.Transition.Extended (
  )
 import Data.Coerce (coerce)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Set (Set)
+import Data.Map.NonEmpty (NonEmptyMap)
+import Data.Set.NonEmpty (NonEmptySet)
 import Data.Word (Word32)
 import GHC.Generics (Generic)
 import GHC.Natural (Natural)
@@ -112,7 +108,7 @@ data DijkstraUtxoPredFailure era
   = -- | Subtransition Failures
     UtxosFailure (PredicateFailure (EraRule "UTXOS" era))
   | -- | The bad transaction inputs
-    BadInputsUTxO (Set TxIn)
+    BadInputsUTxO (NonEmptySet TxIn)
   | OutsideValidityIntervalUTxO
       -- | transaction's validity interval
       ValidityInterval
@@ -129,25 +125,25 @@ data DijkstraUtxoPredFailure era
       -- | the expected network id
       Network
       -- | the set of addresses with incorrect network IDs
-      (Set Addr)
+      (NonEmptySet Addr)
   | WrongNetworkWithdrawal
       -- | the expected network id
       Network
       -- | the set of reward addresses with incorrect network IDs
-      (Set RewardAccount)
+      (NonEmptySet AccountAddress)
   | -- | list of supplied transaction outputs that are too small
-    OutputTooSmallUTxO [TxOut era]
+    OutputTooSmallUTxO (NonEmpty (TxOut era))
   | -- | list of supplied bad transaction outputs
-    OutputBootAddrAttrsTooBig [TxOut era]
+    OutputBootAddrAttrsTooBig (NonEmpty (TxOut era))
   | -- | list of supplied bad transaction output triples (actualSize,PParameterMaxValue,TxOut)
-    OutputTooBigUTxO [(Int, Int, TxOut era)]
+    OutputTooBigUTxO (NonEmpty (Int, Int, TxOut era))
   | InsufficientCollateral
       -- | balance computed
       DeltaCoin
       -- | the required collateral for the given fee
       Coin
   | -- | The UTxO entries which have the wrong kind of script
-    ScriptsNotPaidUTxO (UTxO era)
+    ScriptsNotPaidUTxO (NonEmptyMap TxIn (TxOut era))
   | ExUnitsTooBigUTxO
       (Mismatch RelLTEQ ExUnits)
   | -- | The inputs marked for use as fees contain non-ADA tokens
@@ -169,7 +165,7 @@ data DijkstraUtxoPredFailure era
       Coin
   | -- | list of supplied transaction outputs that are too small,
     -- together with the minimum value for the given output.
-    BabbageOutputTooSmallUTxO [(TxOut era, Coin)]
+    BabbageOutputTooSmallUTxO (NonEmpty (TxOut era, Coin))
   | -- | TxIns that appear in both inputs and reference inputs
     BabbageNonDisjointRefInputs (NonEmpty TxIn)
   | PtrPresentInCollateralReturn (TxOut era)

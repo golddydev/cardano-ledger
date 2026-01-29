@@ -55,6 +55,7 @@ module Cardano.Ledger.Conway.Governance.Procedures (
   indexedGovProps,
   Constitution (..),
   constitutionAnchorL,
+  constitutionGuardrailsScriptHashL,
   constitutionScriptL,
   showGovActionType,
   -- Lenses
@@ -80,7 +81,6 @@ module Cardano.Ledger.Conway.Governance.Procedures (
 ) where
 
 import Cardano.Crypto.Hash (hashToTextAsHex)
-import Cardano.Ledger.Address (RewardAccount)
 import Cardano.Ledger.Alonzo.TxBody (Indexable (..))
 import Cardano.Ledger.Babbage.Core
 import Cardano.Ledger.BaseTypes (
@@ -243,10 +243,10 @@ gasDepositL = gasProposalProcedureL . pProcDepositL
 gasDeposit :: GovActionState era -> Coin
 gasDeposit = pProcDeposit . gasProposalProcedure
 
-gasReturnAddrL :: Lens' (GovActionState era) RewardAccount
+gasReturnAddrL :: Lens' (GovActionState era) AccountAddress
 gasReturnAddrL = gasProposalProcedureL . pProcReturnAddrL
 
-gasReturnAddr :: GovActionState era -> RewardAccount
+gasReturnAddr :: GovActionState era -> AccountAddress
 gasReturnAddr = pProcReturnAddr . gasProposalProcedure
 
 gasActionL :: Lens' (GovActionState era) (GovAction era)
@@ -486,7 +486,7 @@ indexedGovProps = enumerateProps 0
 
 data ProposalProcedure era = ProposalProcedure
   { pProcDeposit :: !Coin
-  , pProcReturnAddr :: !RewardAccount
+  , pProcReturnAddr :: !AccountAddress
   , pProcGovAction :: !(GovAction era)
   , pProcAnchor :: !Anchor
   }
@@ -495,7 +495,7 @@ data ProposalProcedure era = ProposalProcedure
 pProcDepositL :: Lens' (ProposalProcedure era) Coin
 pProcDepositL = lens pProcDeposit (\p x -> p {pProcDeposit = x})
 
-pProcReturnAddrL :: Lens' (ProposalProcedure era) RewardAccount
+pProcReturnAddrL :: Lens' (ProposalProcedure era) AccountAddress
 pProcReturnAddrL = lens pProcReturnAddr (\p x -> p {pProcReturnAddr = x})
 
 pProcGovActionL :: Lens' (ProposalProcedure era) (GovAction era)
@@ -798,7 +798,7 @@ data GovAction era
       !(StrictMaybe (GovPurposeId 'PParamUpdatePurpose))
       -- | Proposed changes to PParams
       !(PParamsUpdate era)
-      -- | Policy hash protection
+      -- | Guardrails script hash protection
       !(StrictMaybe ScriptHash)
   | HardForkInitiation
       -- | Previous governance action id of `HardForkInitiation` type, which corresponds
@@ -808,8 +808,8 @@ data GovAction era
       !ProtVer
   | TreasuryWithdrawals
       -- | Proposed treasury withdrawals
-      !(Map RewardAccount Coin)
-      -- | Policy hash protection
+      !(Map AccountAddress Coin)
+      -- | Guardrails script hash protection
       !(StrictMaybe ScriptHash)
   | NoConfidence
       -- | Previous governance action id of `NoConfidence` or `UpdateCommittee` type, which
@@ -892,7 +892,7 @@ instance EraPParams era => EncCBOR (GovAction era) where
 
 data Constitution era = Constitution
   { constitutionAnchor :: !Anchor
-  , constitutionScript :: !(StrictMaybe ScriptHash)
+  , constitutionGuardrailsScriptHash :: !(StrictMaybe ScriptHash)
   }
   deriving (Generic, Ord)
   deriving (ToJSON) via KeyValuePairs (Constitution era)
@@ -900,8 +900,12 @@ data Constitution era = Constitution
 constitutionAnchorL :: Lens' (Constitution era) Anchor
 constitutionAnchorL = lens constitutionAnchor (\x y -> x {constitutionAnchor = y})
 
+constitutionGuardrailsScriptHashL :: Lens' (Constitution era) (StrictMaybe ScriptHash)
+constitutionGuardrailsScriptHashL = lens constitutionGuardrailsScriptHash (\x y -> x {constitutionGuardrailsScriptHash = y})
+
+{-# DEPRECATED constitutionScriptL "In favor of `constitutionGuardrailsScriptHashL`" #-}
 constitutionScriptL :: Lens' (Constitution era) (StrictMaybe ScriptHash)
-constitutionScriptL = lens constitutionScript (\x y -> x {constitutionScript = y})
+constitutionScriptL = constitutionGuardrailsScriptHashL
 
 instance Era era => FromJSON (Constitution era) where
   parseJSON = withObject "Constitution" $ \o ->
@@ -913,7 +917,7 @@ instance ToKeyValuePairs (Constitution era) where
   toKeyValuePairs c@(Constitution _ _) =
     let Constitution {..} = c
      in ["anchor" .= constitutionAnchor]
-          <> ["script" .= cScript | SJust cScript <- [constitutionScript]]
+          <> ["script" .= cScript | SJust cScript <- [constitutionGuardrailsScriptHash]]
 
 deriving instance Eq (Constitution era)
 
@@ -934,7 +938,7 @@ instance Era era => EncCBOR (Constitution era) where
     encode $
       Rec (Constitution @era)
         !> To constitutionAnchor
-        !> E (encodeNullStrictMaybe encCBOR) constitutionScript
+        !> E (encodeNullStrictMaybe encCBOR) constitutionGuardrailsScriptHash
 
 instance Era era => ToCBOR (Constitution era) where
   toCBOR = toEraCBOR @era

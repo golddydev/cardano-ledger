@@ -55,8 +55,12 @@ module Control.State.Transition.Extended (
   failBecause,
   failOnJust,
   failOnNonEmpty,
+  failOnNonEmptySet,
+  failOnNonEmptyMap,
   failureOnJust,
   failureOnNonEmpty,
+  failureOnNonEmptySet,
+  failureOnNonEmptyMap,
   judgmentContext,
   trans,
   liftSTS,
@@ -107,6 +111,11 @@ import Data.Functor (($>), (<&>))
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NE
+import Data.Map.NonEmpty (NonEmptyMap)
+import qualified Data.Map.NonEmpty as NEM
+import Data.Map.Strict (Map)
+import Data.Set.NonEmpty (NonEmptySet)
+import qualified Data.Set.NonEmpty as NES
 import Data.Typeable (typeRep)
 import Data.Void (Void)
 import NoThunks.Class (NoThunks (..))
@@ -415,6 +424,28 @@ failOnNonEmpty cond onNonEmpty = liftF $ Predicate (failureOnNonEmpty cond onNon
 failureOnNonEmpty :: Foldable f => f a -> (NonEmpty a -> e) -> Validation (NonEmpty e) ()
 failureOnNonEmpty cond = failureOnJust (NE.nonEmpty (F.toList cond))
 
+-- | Produce a predicate failure when supplied foldable is not an empty set, contents of which
+-- will be converted to a NonEmptySet and can be used inside the predicate failure.
+failOnNonEmptySet ::
+  (Foldable f, Ord a) => f a -> (NonEmptySet a -> PredicateFailure sts) -> Rule sts ctx ()
+failOnNonEmptySet cond onNonEmpty = liftF $ Predicate (failureOnNonEmptySet cond onNonEmpty) id ()
+
+-- | Produce a failure when supplied foldable is not an empty set, contents of which will be
+-- converted to a NonEmptySet and can then be used inside the failure constructor.
+failureOnNonEmptySet ::
+  (Foldable f, Ord a) => f a -> (NonEmptySet a -> e) -> Validation (NonEmpty e) ()
+failureOnNonEmptySet cond = failureOnJust (NES.fromFoldable cond)
+
+-- | Produce a predicate failure when supplied foldable is not an empty Map, contents of which
+-- will be converted to a NonEmptyMap and can be used inside the predicate failure.
+failOnNonEmptyMap :: Map k v -> (NonEmptyMap k v -> PredicateFailure sts) -> Rule sts ctx ()
+failOnNonEmptyMap cond onNonEmpty = liftF $ Predicate (failureOnNonEmptyMap cond onNonEmpty) id ()
+
+-- | Produce a failure when supplied foldable is not an empty Map, contents of which will be
+-- converted to a NonEmptyMap and can then be used inside the failure constructor.
+failureOnNonEmptyMap :: Map k v -> (NonEmptyMap k v -> e) -> Validation (NonEmpty e) ()
+failureOnNonEmptyMap cond = failureOnJust (NEM.fromMap cond)
+
 -- | Oh noes with an explanation
 --
 --   We interpret this as "What?" "No!" "Because:"
@@ -457,7 +488,7 @@ whenFailureFreeDefault defValOnFailure actionOnNoFailure =
 
 liftSTS ::
   STS sts =>
-  (BaseM sts) a ->
+  BaseM sts a ->
   Rule sts ctx a
 liftSTS f = wrap $ Lift f pure
 
@@ -640,7 +671,7 @@ applyRuleInternal ::
   -- | We need to know if the current STS incurred at least one
   -- PredicateFailure.  This is necessary because `applyRuleInternal` is called
   -- recursively through the @goSTS@ argument, which will not have access to any
-  -- of the predicate failures occured in other branches of STS rule execusion tree.
+  -- of the predicate failures occurred in other branches of STS rule execusion tree.
   IsFailing ->
   SingEP ep ->
   ValidationPolicy ->

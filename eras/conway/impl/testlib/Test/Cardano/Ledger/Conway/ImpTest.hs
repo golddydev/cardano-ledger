@@ -39,7 +39,7 @@ module Test.Cardano.Ledger.Conway.ImpTest (
   trySubmitProposals,
   mkConstitutionProposal,
   mkProposal,
-  mkProposalWithRewardAccount,
+  mkProposalWithAccountAddress,
   mkTreasuryWithdrawalsGovAction,
   submitTreasuryWithdrawals,
   submitVote,
@@ -80,6 +80,7 @@ module Test.Cardano.Ledger.Conway.ImpTest (
   logCurPParams,
   submitCommitteeElection,
   electBasicCommittee,
+  setupActiveInactiveCCMembers,
   proposalsShowDebug,
   getGovPolicy,
   submitFailingGovAction,
@@ -93,6 +94,7 @@ module Test.Cardano.Ledger.Conway.ImpTest (
   ccShouldNotBeExpired,
   ccShouldBeResigned,
   ccShouldNotBeResigned,
+  ccShouldNotHaveHotKey,
   getLastEnactedCommittee,
   getLastEnactedConstitution,
   submitParameterChange,
@@ -136,10 +138,10 @@ module Test.Cardano.Ledger.Conway.ImpTest (
   conwayDelegStakeTxCert,
 ) where
 
-import Cardano.Ledger.Address (RewardAccount (..))
 import Cardano.Ledger.BaseTypes (
   EpochInterval (..),
   EpochNo (..),
+  Inject,
   ProtVer (..),
   ShelleyBase,
   StrictMaybe (..),
@@ -150,7 +152,7 @@ import Cardano.Ledger.BaseTypes (
   inject,
   textToUrl,
  )
-import Cardano.Ledger.Coin (Coin (..))
+import Cardano.Ledger.Coin (Coin (..), CompactForm (CompactCoin))
 import Cardano.Ledger.Compactible (fromCompact)
 import Cardano.Ledger.Conway (ConwayEra, hardforkConwayBootstrapPhase)
 import Cardano.Ledger.Conway.Core
@@ -186,6 +188,7 @@ import Cardano.Ledger.Conway.TxCert (Delegatee (..))
 import Cardano.Ledger.Credential (Credential (..))
 import Cardano.Ledger.DRep
 import Cardano.Ledger.Plutus.Language (Language (..), SLanguage (..), hashPlutusScript)
+import Cardano.Ledger.Shelley.API (ApplyTxError)
 import Cardano.Ledger.Shelley.LedgerState (
   curPParamsEpochStateL,
   epochStateGovStateL,
@@ -367,6 +370,7 @@ class
   , InjectRuleFailure "BBODY" ConwayBbodyPredFailure era
   , InjectRuleEvent "TICK" ConwayHardForkEvent era
   , InjectRuleEvent "TICK" ConwayEpochEvent era
+  , Inject (NonEmpty (PredicateFailure (EraRule "LEDGER" era))) (ApplyTxError era)
   ) =>
   ConwayEraImp era
 
@@ -753,7 +757,7 @@ submitAndExpireProposalToMakeReward ::
   Credential Staking ->
   ImpTestM era ()
 submitAndExpireProposalToMakeReward stakingC = do
-  rewardAccount <- getRewardAccountFor stakingC
+  accountAddress <- getAccountAddressFor stakingC
   pp <- getsNES $ nesEsL . curPParamsEpochStateL
   let
     EpochInterval lifetime = pp ^. ppGovActionLifetimeL
@@ -762,7 +766,7 @@ submitAndExpireProposalToMakeReward stakingC = do
     submitProposal $
       ProposalProcedure
         { pProcDeposit = deposit
-        , pProcReturnAddr = rewardAccount
+        , pProcReturnAddr = accountAddress
         , pProcGovAction = InfoAction
         , pProcAnchor = def
         }
@@ -780,18 +784,18 @@ trySubmitGovActions gas = do
   proposals <- traverse mkProposal gas
   trySubmitProposals proposals
 
-mkProposalWithRewardAccount ::
+mkProposalWithAccountAddress ::
   (ShelleyEraImp era, ConwayEraTxBody era) =>
   GovAction era ->
-  RewardAccount ->
+  AccountAddress ->
   ImpTestM era (ProposalProcedure era)
-mkProposalWithRewardAccount ga rewardAccount = do
+mkProposalWithAccountAddress ga accountAddress = do
   deposit <- getsNES $ nesEsL . curPParamsEpochStateL . ppGovActionDepositL
   anchor <- arbitrary
   pure
     ProposalProcedure
       { pProcDeposit = deposit
-      , pProcReturnAddr = rewardAccount
+      , pProcReturnAddr = accountAddress
       , pProcGovAction = ga
       , pProcAnchor = anchor
       }
@@ -801,8 +805,8 @@ mkProposal ::
   GovAction era ->
   ImpTestM era (ProposalProcedure era)
 mkProposal ga = do
-  rewardAccount <- registerRewardAccount
-  mkProposalWithRewardAccount ga rewardAccount
+  accountAddress <- registerAccountAddress
+  mkProposalWithAccountAddress ga accountAddress
 
 submitGovAction ::
   forall era.
@@ -838,21 +842,21 @@ submitGovActions gas = do
 
 mkTreasuryWithdrawalsGovAction ::
   ConwayEraGov era =>
-  [(RewardAccount, Coin)] ->
+  [(AccountAddress, Coin)] ->
   ImpTestM era (GovAction era)
 mkTreasuryWithdrawalsGovAction wdrls =
   TreasuryWithdrawals (Map.fromList wdrls) <$> getGovPolicy
 
 submitTreasuryWithdrawals ::
   ConwayEraImp era =>
-  [(RewardAccount, Coin)] ->
+  [(AccountAddress, Coin)] ->
   ImpTestM era GovActionId
 submitTreasuryWithdrawals wdrls =
   mkTreasuryWithdrawalsGovAction wdrls >>= submitGovAction
 
 enactTreasuryWithdrawals ::
   ConwayEraImp era =>
-  [(RewardAccount, Coin)] ->
+  [(AccountAddress, Coin)] ->
   Credential DRepRole ->
   NonEmpty (Credential HotCommitteeRole) ->
   ImpTestM era GovActionId
@@ -885,12 +889,14 @@ mkMinFeeUpdateGovAction ::
   ImpTestM era (GovAction era)
 mkMinFeeUpdateGovAction p = do
   minFeeValue <- uniformRM (30, 1000)
-  mkParameterChangeGovAction p (def & ppuMinFeeAL .~ SJust (Coin minFeeValue))
+  mkParameterChangeGovAction
+    p
+    (def & ppuTxFeePerByteL .~ SJust (CoinPerByte $ CompactCoin minFeeValue))
 
 getGovPolicy :: ConwayEraGov era => ImpTestM era (StrictMaybe ScriptHash)
 getGovPolicy =
   getsNES $
-    nesEpochStateL . epochStateGovStateL . constitutionGovStateL . constitutionScriptL
+    nesEpochStateL . epochStateGovStateL . constitutionGovStateL . constitutionGuardrailsScriptHashL
 
 submitFailingGovAction ::
   forall era.
@@ -1049,7 +1055,8 @@ ccShouldNotBeExpired ::
 ccShouldNotBeExpired coldC = do
   curEpochNo <- getsNES nesELL
   ccExpiryEpochNo <- getCCExpiry coldC
-  curEpochNo `shouldSatisfy` (<= ccExpiryEpochNo)
+  impAnn "ccShouldNotBeExpired" $
+    curEpochNo `shouldSatisfy` (<= ccExpiryEpochNo)
 
 ccShouldBeExpired ::
   (HasCallStack, ConwayEraGov era) =>
@@ -1058,7 +1065,8 @@ ccShouldBeExpired ::
 ccShouldBeExpired coldC = do
   curEpochNo <- getsNES nesELL
   ccExpiryEpochNo <- getCCExpiry coldC
-  curEpochNo `shouldSatisfy` (> ccExpiryEpochNo)
+  impAnn "ccShouldBeExpired" $
+    curEpochNo `shouldSatisfy` (> ccExpiryEpochNo)
 
 getCCExpiry ::
   (HasCallStack, ConwayEraGov era) =>
@@ -1073,21 +1081,35 @@ getCCExpiry coldC = do
         Nothing -> assertFailure $ "Committee not found for cold credential: " <> show coldC
         Just epochNo -> pure epochNo
 
+getCCAuthorization ::
+  ConwayEraCertState era =>
+  Credential ColdCommitteeRole ->
+  ImpTestM era (Maybe CommitteeAuthorization)
+getCCAuthorization coldK = do
+  committeeCreds <-
+    getsNES $ nesEsL . esLStateL . lsCertStateL . certVStateL . vsCommitteeStateL . csCommitteeCredsL
+  return $ Map.lookup coldK committeeCreds
+
 -- | Test the resignation status for a CC cold key to be resigned
 ccShouldBeResigned ::
   (HasCallStack, ConwayEraCertState era) => Credential ColdCommitteeRole -> ImpTestM era ()
-ccShouldBeResigned coldK = do
-  committeeCreds <-
-    getsNES $ nesEsL . esLStateL . lsCertStateL . certVStateL . vsCommitteeStateL . csCommitteeCredsL
-  authHk <$> Map.lookup coldK committeeCreds `shouldBe` Just Nothing
+ccShouldBeResigned coldK =
+  impAnn "ccShouldBeResigned" $
+    (authHk <$>) <$> getCCAuthorization coldK `shouldReturn` Just Nothing
 
 -- | Test the resignation status for a CC cold key to not be resigned
 ccShouldNotBeResigned ::
   (HasCallStack, ConwayEraCertState era) => Credential ColdCommitteeRole -> ImpTestM era ()
-ccShouldNotBeResigned coldK = do
-  committeeCreds <-
-    getsNES $ nesEsL . esLStateL . lsCertStateL . certVStateL . vsCommitteeStateL . csCommitteeCredsL
-  (Map.lookup coldK committeeCreds >>= authHk) `shouldSatisfy` isJust
+ccShouldNotBeResigned coldK =
+  impAnn "ccShouldNotBeResigned" $
+    getCCAuthorization coldK >>= \hotK -> (hotK >>= authHk) `shouldSatisfy` isJust
+
+-- | Test the status for a CC cold key to not have an associated hot key
+ccShouldNotHaveHotKey ::
+  (HasCallStack, ConwayEraCertState era) => Credential ColdCommitteeRole -> ImpTestM era ()
+ccShouldNotHaveHotKey coldK =
+  impAnn "ccShouldNotHaveHotKey" $
+    getCCAuthorization coldK `shouldReturn` Nothing
 
 authHk :: CommitteeAuthorization -> Maybe (Credential HotCommitteeRole)
 authHk (CommitteeHotCredential hk) = Just hk
@@ -1374,6 +1396,52 @@ electBasicCommittee = do
       committeeMembers `shouldSatisfy` Set.member coldCommitteeC
     hotCommitteeC <- registerCommitteeHotKey coldCommitteeC
     pure (drep, hotCommitteeC, GovPurposeId gaidCommitteeProp)
+
+setupActiveInactiveCCMembers ::
+  forall era.
+  ( HasCallStack
+  , ConwayEraImp era
+  ) =>
+  -- | Number of active committee members
+  Int ->
+  -- | Number of inactive committee members
+  Int ->
+  -- | Threshold
+  UnitInterval ->
+  ImpTestM era GovActionId
+setupActiveInactiveCCMembers nActive nInactive threshold = do
+  coldCommitteeActive <- replicateM nActive (KeyHashObj <$> freshKeyHash)
+  coldCommitteeInactive <- replicateM nInactive (KeyHashObj <$> freshKeyHash)
+  startingEpoch <- getsNES nesELL
+  maxTermLength <- getsPParams ppCommitteeMaxTermLengthL
+  (drep, _, _) <- setupSingleDRep 1_000_000_000
+  (spo, _, _) <- setupPoolWithStake $ Coin 1_000_000_000
+  let
+    committeeMap =
+      Map.fromList $
+        map (,addEpochInterval startingEpoch maxTermLength) coldCommitteeActive
+          ++ map (,addEpochInterval startingEpoch $ EpochInterval 5) coldCommitteeInactive
+  initialCommittee <- getCommitteeMembers
+  committeeActionId <-
+    impAnn "Submit committee update"
+      . submitGovAction
+      $ UpdateCommittee
+        SNothing
+        initialCommittee
+        committeeMap
+        threshold
+  submitYesVote_ (DRepVoter drep) committeeActionId
+  submitYesVote_ (StakePoolVoter spo) committeeActionId
+  passNEpochs 6
+  getCommitteeMembers `shouldReturn` Map.keysSet committeeMap
+  forM_ coldCommitteeActive registerCommitteeHotKey
+  impAnn "Verifying active committee members" $
+    forM_ coldCommitteeActive $
+      \coldK -> ccShouldNotBeExpired coldK >> ccShouldNotBeResigned coldK
+  impAnn "Verifying inactive committee members" $
+    forM_ coldCommitteeInactive $
+      \coldK -> ccShouldBeExpired coldK >> ccShouldNotHaveHotKey coldK
+  return committeeActionId
 
 logCurPParams ::
   ( EraGov era
@@ -1836,7 +1904,7 @@ delegateSPORewardAddressToDRep_ kh stake drep = do
   sps <- getRatifyEnv >>= expectJust . Map.lookup kh . reStakePools
   void $
     delegateToDRep
-      (spsRewardAccount sps)
+      (spsAccountAddress sps)
       stake
       drep
 
@@ -1853,7 +1921,7 @@ instance InjectRuleFailure "CERT" ShelleyDelegPredFailure ConwayEra where
 instance InjectRuleFailure "DELEG" ShelleyDelegPredFailure ConwayEra where
   injectFailure (Shelley.StakeKeyAlreadyRegisteredDELEG c) = StakeKeyRegisteredDELEG c
   injectFailure (Shelley.StakeKeyNotRegisteredDELEG c) = StakeKeyNotRegisteredDELEG c
-  injectFailure (Shelley.StakeKeyNonZeroAccountBalanceDELEG c) = StakeKeyHasNonZeroRewardAccountBalanceDELEG c
+  injectFailure (Shelley.StakeKeyNonZeroAccountBalanceDELEG c) = StakeKeyHasNonZeroAccountBalanceDELEG c
   injectFailure _ = error "Cannot inject ShelleyDelegPredFailure into ConwayEra"
 
 getCommittee :: ConwayEraGov era => ImpTestM era (StrictMaybe (Committee era))

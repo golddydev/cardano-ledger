@@ -2,6 +2,9 @@
 
 ## 1.9.0.0
 
+* Add `AllegraApplyTxError` constructor for `ApplyTxError era`
+* Change sets containing errors into `NonEmptySet` for `AllegraUtxoPredFailure`
+* Change all lists into `NonEmpty` for `AllegraUtxoPredFailure`
 * Add `cddl` sub-library, and `generate-cddl` executable.
 * Remove deprecated type `Allegra`
 * Remove deprecated type `TimelockConstr`
@@ -14,6 +17,8 @@
 
 ### `cddl`
 
+* Move `cddl-files` to `cddl/data`.
+* Make `max_int64`, `min_int64` and `int64` era generic.
 * Export for cross-era reuse:
   - `auxiliaryScriptsRule`, `auxiliaryDataArrayRule`, `auxiliaryDataRule`
   - `minInt64Rule`, `maxInt64Rule`, `int64Rule`
@@ -25,6 +30,9 @@
 
 ### `testlib`
 
+* Remove `huddle-cddl` and the `CDDL` modules.
+* Add `Test.Cardano.Ledger.Allegra.Binary.Golden`
+* Add `allegraDecodeDuplicateDelegCertSucceeds`
 * Add CDDL definitions for int64 types: `int64`, `min_int64`, `max_int64`, `negative_int64`, `positive_int64`, `nonzero_int64`
 * Rename `native_script` -> `allegra_native_script` in CDDL
 * Add `auxiliary_data_array` to CDDL for simplification

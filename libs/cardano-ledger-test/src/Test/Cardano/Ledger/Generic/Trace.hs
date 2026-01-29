@@ -17,11 +17,10 @@ module Test.Cardano.Ledger.Generic.Trace where
 
 -- =========================================================================
 
-import Cardano.Ledger.Address (Addr (..))
 import Cardano.Ledger.Alonzo.Rules (AlonzoUtxowPredFailure (..))
 import Cardano.Ledger.Babbage.Rules (BabbageUtxowPredFailure (..))
-import Cardano.Ledger.BaseTypes (BlocksMade (..), Globals (networkId))
-import Cardano.Ledger.Coin (CompactForm (CompactCoin))
+import Cardano.Ledger.BaseTypes (BlocksMade (..), Globals)
+import Cardano.Ledger.Coin (knownNonZeroCoin)
 import Cardano.Ledger.Shelley.Core
 import Cardano.Ledger.Shelley.LedgerState (
   EpochState (..),
@@ -57,6 +56,7 @@ import Data.Maybe.Strict (StrictMaybe (..))
 import Data.Sequence.Strict (StrictSeq (..))
 import qualified Data.Sequence.Strict as SS
 import qualified Data.Set as Set
+import qualified Data.Set.NonEmpty as NES
 import Data.TreeDiff
 import Data.Vector (Vector, (!))
 import qualified Data.Vector as Vector
@@ -104,7 +104,9 @@ import Test.Control.State.Transition.Trace.Generator.QuickCheck (HasTrace (..), 
 genRsTxAndModel ::
   forall era.
   EraGenericGen era =>
-  Int -> SlotNo -> GenRS era (Tx TopTx era)
+  Int ->
+  SlotNo ->
+  GenRS era (Tx TopTx era)
 genRsTxAndModel n slot = do
   (_, tx) <- genAlonzoTx slot
   modifyModel (\model -> applyTx n slot model tx)
@@ -165,7 +167,7 @@ initialMockChainState gstate =
         , nesBcur = BlocksMade Map.empty
         , nesEs = makeEpochState gstate ledgerstate
         , nesRu = SNothing
-        , nesPd = PoolDistr (gsInitialPoolDistr gstate) (CompactCoin 1)
+        , nesPd = PoolDistr (gsInitialPoolDistr gstate) (knownNonZeroCoin @1)
         , stashedAVVMAddresses = stashedAVVMAddressesZero (reify @era)
         }
 
@@ -191,7 +193,7 @@ snaps (LedgerState UTxOState {utxosUtxo = u, utxosFees = f} certState) =
   where
     pstate = certState ^. certPStateL
     dstate = certState ^. certDStateL
-    snap = stakeDistr (networkId testGlobals) u dstate pstate
+    snap = stakeDistr u dstate pstate
 
 -- ==============================================================================
 
@@ -232,7 +234,7 @@ badScripts proof xs = Fold.foldl' (\s mcf -> Set.union s (getw proof mcf)) Set.e
                     )
                 )
             )
-        ) = set
+        ) = NES.toSet set
     getw
       Alonzo
       ( MockChainFromLedgersFailure
@@ -243,7 +245,7 @@ badScripts proof xs = Fold.foldl' (\s mcf -> Set.union s (getw proof mcf)) Set.e
                     )
                 )
             )
-        ) = set
+        ) = NES.toSet set
     getw
       Mary
       ( MockChainFromLedgersFailure
@@ -252,7 +254,7 @@ badScripts proof xs = Fold.foldl' (\s mcf -> Set.union s (getw proof mcf)) Set.e
                   (ScriptWitnessNotValidatingUTXOW set)
                 )
             )
-        ) = set
+        ) = NES.toSet set
     getw
       Allegra
       ( MockChainFromLedgersFailure
@@ -261,7 +263,7 @@ badScripts proof xs = Fold.foldl' (\s mcf -> Set.union s (getw proof mcf)) Set.e
                   (ScriptWitnessNotValidatingUTXOW set)
                 )
             )
-        ) = set
+        ) = NES.toSet set
     getw _ _ = Set.empty
 
 shortTxOut :: EraTxOut era => TxOut era -> Expr
@@ -455,7 +457,7 @@ forAllTraceFromInitState baseEnv maxTraceLength traceGenEnv genSt0 =
 --   Under the assumption that shorter tests have advantages
 --   like not getting turned off because the tests take too long. A glaring failure is
 --   likely to be caught in 'n' tests, rather than the standard '100'
-testPropMax :: Testable prop => Int -> String -> prop -> Spec
+testPropMax :: (HasCallStack, Testable prop) => Int -> String -> prop -> Spec
 testPropMax n name x = prop name (withMaxSuccess n x)
 
 chainTest ::

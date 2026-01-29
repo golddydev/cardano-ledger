@@ -10,7 +10,6 @@
 
 module Test.Cardano.Ledger.Conway.Imp.UtxosSpec (spec) where
 
-import Cardano.Ledger.Address (Addr (..))
 import Cardano.Ledger.Allegra.Scripts (
   pattern RequireTimeStart,
  )
@@ -40,6 +39,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.OSet.Strict as OSet
 import qualified Data.Sequence.Strict as SSeq
 import qualified Data.Set as Set
+import qualified Data.Set.NonEmpty as NES
 import Lens.Micro
 import qualified PlutusLedgerApi.V1 as P1
 import Test.Cardano.Ledger.Conway.ImpTest
@@ -74,7 +74,7 @@ spec = do
           else
             submitFailingTx
               tx
-              [ injectFailure $ UnspendableUTxONoDatumHash [txIn]
+              [ injectFailure $ UnspendableUTxONoDatumHash $ NES.singleton txIn
               ]
 
 datumAndReferenceInputsSpec ::
@@ -218,8 +218,8 @@ conwayFeaturesPlutusV1V2FailureSpec = do
       describe "ProposalProcedures" $ do
         it "V1" $ do
           deposit <- getsNES $ nesEsL . curPParamsEpochStateL . ppGovActionDepositL
-          rewardAccount <- registerRewardAccount
-          let badField = OSet.singleton $ ProposalProcedure deposit rewardAccount InfoAction def
+          accountAddress <- registerAccountAddress
+          let badField = OSet.singleton $ ProposalProcedure deposit accountAddress InfoAction def
           testPlutusV1V2Failure
             (hashPlutusScript $ redeemerSameAsDatum SPlutusV1)
             badField
@@ -228,8 +228,8 @@ conwayFeaturesPlutusV1V2FailureSpec = do
             $ ProposalProceduresFieldNotSupported badField
         it "V2" $ do
           deposit <- getsNES $ nesEsL . curPParamsEpochStateL . ppGovActionDepositL
-          rewardAccount <- registerRewardAccount
-          let badField = OSet.singleton $ ProposalProcedure deposit rewardAccount InfoAction def
+          accountAddress <- registerAccountAddress
+          let badField = OSet.singleton $ ProposalProcedure deposit accountAddress InfoAction def
           testPlutusV1V2Failure
             (hashPlutusScript $ redeemerSameAsDatum SPlutusV2)
             badField
@@ -422,18 +422,18 @@ govPolicySpec = do
               mkBasicTx mkBasicTxBody
                 & bodyTxL . proposalProceduresTxBodyL .~ [proposal]
                 & bodyTxL . vldtTxBodyL .~ ValidityInterval SNothing SNothing
-        submitFailingTx tx [injectFailure $ ScriptWitnessNotValidatingUTXOW [scriptHash]]
+        submitFailingTx tx [injectFailure $ ScriptWitnessNotValidatingUTXOW $ NES.singleton scriptHash]
 
       impAnn "TreasuryWithdrawals" $ do
-        rewardAccount <- registerRewardAccount
-        let withdrawals = Map.fromList [(rewardAccount, Coin 1000)]
+        accountAddress <- registerAccountAddress
+        let withdrawals = Map.fromList [(accountAddress, Coin 1000)]
         let govAction = TreasuryWithdrawals withdrawals (SJust scriptHash)
         proposal <- mkProposal govAction
         let tx =
               mkBasicTx mkBasicTxBody
                 & bodyTxL . proposalProceduresTxBodyL .~ [proposal]
                 & bodyTxL . vldtTxBodyL .~ ValidityInterval SNothing SNothing
-        submitFailingTx tx [injectFailure $ ScriptWitnessNotValidatingUTXOW [scriptHash]]
+        submitFailingTx tx [injectFailure $ ScriptWitnessNotValidatingUTXOW $ NES.singleton scriptHash]
 
     it "alwaysSucceeds Plutus govPolicy validates" $ whenPostBootstrap $ do
       let alwaysSucceedsSh = hashPlutusScript (alwaysSucceedsNoDatum SPlutusV3)
@@ -446,14 +446,14 @@ govPolicySpec = do
           (Constitution anchor (SJust alwaysSucceedsSh))
           dRep
           committeeMembers'
-      rewardAccount <- registerRewardAccount
+      accountAddress <- registerAccountAddress
 
       impAnn "ParameterChange" $ do
         let pparamsUpdate = def & ppuCommitteeMinSizeL .~ SJust 1
         let govAction = ParameterChange SNothing pparamsUpdate (SJust alwaysSucceedsSh)
         mkProposal govAction >>= submitProposal_
       impAnn "TreasuryWithdrawals" $ do
-        let withdrawals = Map.fromList [(rewardAccount, Coin 1000)]
+        let withdrawals = Map.fromList [(accountAddress, Coin 1000)]
         let govAction = TreasuryWithdrawals withdrawals (SJust alwaysSucceedsSh)
         mkProposal govAction >>= submitProposal_
 
@@ -473,8 +473,8 @@ govPolicySpec = do
         submitPhase2Invalid_ tx
 
       impAnn "TreasuryWithdrawals" $ do
-        rewardAccount <- registerRewardAccount
-        let withdrawals = Map.fromList [(rewardAccount, Coin 1000)]
+        accountAddress <- registerAccountAddress
+        let withdrawals = Map.fromList [(accountAddress, Coin 1000)]
         let govAction = TreasuryWithdrawals withdrawals (SJust alwaysFailsSh)
         proposal <- mkProposal govAction
         let tx = mkBasicTx mkBasicTxBody & bodyTxL . proposalProceduresTxBodyL .~ [proposal]

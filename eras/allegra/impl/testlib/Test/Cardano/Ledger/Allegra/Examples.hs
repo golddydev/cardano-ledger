@@ -19,6 +19,12 @@ import Cardano.Ledger.Allegra.TxBody
 import Cardano.Ledger.Coin
 import Cardano.Ledger.Genesis (NoGenesis (..))
 import Cardano.Ledger.Shelley.PParams (Update (..))
+import Cardano.Ledger.Shelley.Rules (
+  ShelleyDelegPredFailure (DelegateeNotRegisteredDELEG),
+  ShelleyDelegsPredFailure (DelplFailure),
+  ShelleyDelplPredFailure (DelegFailure),
+  ShelleyLedgerPredFailure (DelegsFailure),
+ )
 import Cardano.Ledger.Shelley.Scripts
 import Cardano.Slotting.Slot
 import Data.Proxy
@@ -44,6 +50,9 @@ import Test.Cardano.Ledger.Shelley.Examples (
 ledgerExamples :: LedgerExamples AllegraEra
 ledgerExamples =
   mkLedgerExamples
+    ( AllegraApplyTxError . pure . DelegsFailure . DelplFailure . DelegFailure $
+        DelegateeNotRegisteredDELEG @AllegraEra (mkKeyHash 1)
+    )
     (mkWitnessesPreAlonzo (Proxy @AllegraEra))
     exampleCoin
     (exampleAllegraTxBody exampleCoin)

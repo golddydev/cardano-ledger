@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -27,14 +28,19 @@ import Cardano.Ledger.Conway.Rules (
   ConwayCertPredFailure (..),
   ConwayCertsPredFailure (..),
   ConwayDelegPredFailure (..),
+  PredicateFailure,
  )
 import Cardano.Ledger.Conway.TxCert
 import Cardano.Ledger.Credential
-import Cardano.Ledger.Dijkstra (DijkstraEra)
+import Cardano.Ledger.Dijkstra (ApplyTxError, DijkstraEra)
 import Cardano.Ledger.Dijkstra.Core
 import Cardano.Ledger.Dijkstra.Genesis (DijkstraGenesis (..))
 import Cardano.Ledger.Dijkstra.PParams (UpgradeDijkstraPParams (..))
-import Cardano.Ledger.Dijkstra.Rules (DijkstraLedgerPredFailure (..))
+import Cardano.Ledger.Dijkstra.Rules (
+  DijkstraLedgerPredFailure (..),
+  DijkstraMempoolPredFailure,
+  DijkstraUtxoPredFailure,
+ )
 import Cardano.Ledger.Dijkstra.Scripts (
   DijkstraNativeScript,
   evalDijkstraNativeScript,
@@ -52,6 +58,7 @@ import Cardano.Ledger.Shelley.Scripts (
   pattern RequireSignature,
  )
 import Cardano.Ledger.State
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromJust)
 import qualified Data.Set as Set
@@ -97,6 +104,11 @@ instance ConwayEraImp DijkstraEra
 class
   ( ConwayEraImp era
   , DijkstraEraTest era
+  , InjectRuleFailure "LEDGER" DijkstraLedgerPredFailure era
+  , InjectRuleFailure "LEDGER" DijkstraUtxoPredFailure era
+  , InjectRuleFailure "MEMPOOL" DijkstraMempoolPredFailure era
+  , InjectRuleFailure "MEMPOOL" DijkstraUtxoPredFailure era
+  , Inject (NonEmpty (PredicateFailure (EraRule "MEMPOOL" era))) (ApplyTxError era)
   ) =>
   DijkstraEraImp era
 
@@ -115,7 +127,7 @@ instance InjectRuleFailure "CERT" ShelleyDelegPredFailure DijkstraEra where
 instance InjectRuleFailure "DELEG" ShelleyDelegPredFailure DijkstraEra where
   injectFailure (Shelley.StakeKeyAlreadyRegisteredDELEG c) = StakeKeyRegisteredDELEG c
   injectFailure (Shelley.StakeKeyNotRegisteredDELEG c) = StakeKeyNotRegisteredDELEG c
-  injectFailure (Shelley.StakeKeyNonZeroAccountBalanceDELEG c) = StakeKeyHasNonZeroRewardAccountBalanceDELEG c
+  injectFailure (Shelley.StakeKeyNonZeroAccountBalanceDELEG c) = StakeKeyHasNonZeroAccountBalanceDELEG c
   injectFailure _ = error "Cannot inject ShelleyDelegPredFailure into DijkstraEra"
 
 exampleDijkstraGenesis :: DijkstraGenesis

@@ -7,19 +7,13 @@
 
 module Test.Cardano.Ledger.Dijkstra.Binary.CddlSpec (spec) where
 
-import Cardano.Ledger.Allegra.Scripts
 import Cardano.Ledger.Alonzo.Scripts (CostModels)
 import Cardano.Ledger.Alonzo.TxWits (Redeemers)
 import Cardano.Ledger.Conway.Governance (GovAction, ProposalProcedure, VotingProcedure)
 import Cardano.Ledger.Core
 import Cardano.Ledger.Dijkstra (DijkstraEra)
+import Cardano.Ledger.Dijkstra.HuddleSpec (dijkstraCDDL)
 import Cardano.Ledger.Plutus.Data (Data, Datum)
-import Test.Cardano.Ledger.Binary.Cddl (
-  beforeAllCddlFile,
-  cddlDecoderEquivalenceSpec,
-  cddlRoundTripAnnCborSpec,
-  cddlRoundTripCborSpec,
- )
 import Test.Cardano.Ledger.Binary.Cuddle (
   huddleDecoderEquivalenceSpec,
   huddleRoundTripAnnCborSpec,
@@ -30,62 +24,15 @@ import Test.Cardano.Ledger.Binary.Cuddle (
 import Test.Cardano.Ledger.Common
 import Test.Cardano.Ledger.Dijkstra.Arbitrary ()
 import Test.Cardano.Ledger.Dijkstra.Binary.Annotator ()
-import Test.Cardano.Ledger.Dijkstra.Binary.Cddl (readDijkstraCddlFiles)
-import Test.Cardano.Ledger.Dijkstra.CDDL (dijkstraCDDL)
 
 spec :: Spec
 spec = do
   describe "CDDL" $ do
     let v = eraProtVerHigh @DijkstraEra
-    describe "Ruby-based" $ beforeAllCddlFile 3 readDijkstraCddlFiles $ do
-      cddlRoundTripCborSpec @(Value DijkstraEra) v "positive_coin"
-      xdescribe "fix Multiasset" $ do
-        cddlRoundTripCborSpec @(Value DijkstraEra) v "value"
-      xdescribe "fix TxBody" $ do
-        cddlRoundTripAnnCborSpec @(TxBody TopTx DijkstraEra) v "transaction_body"
-        cddlRoundTripCborSpec @(TxBody TopTx DijkstraEra) v "transaction_body"
-      xdescribe "fix TxAuxData via annotator" $ do
-        cddlRoundTripAnnCborSpec @(TxAuxData DijkstraEra) v "auxiliary_data"
-        cddlRoundTripCborSpec @(TxAuxData DijkstraEra) v "auxiliary_data"
-      cddlRoundTripAnnCborSpec @(NativeScript DijkstraEra) v "native_script"
-      cddlRoundTripCborSpec @(NativeScript DijkstraEra) v "native_script"
-      cddlRoundTripAnnCborSpec @(Data DijkstraEra) v "plutus_data"
-      cddlRoundTripCborSpec @(Data DijkstraEra) v "plutus_data"
-      xdescribe "fix TxOut" $ do
-        cddlRoundTripCborSpec @(TxOut DijkstraEra) v "transaction_output"
-      xdescribe "fix Script" $ do
-        cddlRoundTripAnnCborSpec @(Script DijkstraEra) v "script"
-        cddlRoundTripCborSpec @(Script DijkstraEra) v "script"
-      cddlRoundTripCborSpec @(Datum DijkstraEra) v "datum_option"
-      cddlRoundTripAnnCborSpec @(TxWits DijkstraEra) v "transaction_witness_set"
-      cddlRoundTripCborSpec @(TxWits DijkstraEra) v "transaction_witness_set"
-      cddlRoundTripCborSpec @(PParamsUpdate DijkstraEra) v "protocol_param_update"
-      cddlRoundTripCborSpec @CostModels v "cost_models"
-      cddlRoundTripAnnCborSpec @(Redeemers DijkstraEra) v "redeemers"
-      cddlRoundTripCborSpec @(Redeemers DijkstraEra) v "redeemers"
-      xdescribe "fix Tx" $ do
-        cddlRoundTripAnnCborSpec @(Tx TopTx DijkstraEra) v "transaction"
-        cddlRoundTripCborSpec @(Tx TopTx DijkstraEra) v "transaction"
-      cddlRoundTripCborSpec @(VotingProcedure DijkstraEra) v "voting_procedure"
-      cddlRoundTripCborSpec @(ProposalProcedure DijkstraEra) v "proposal_procedure"
-      cddlRoundTripCborSpec @(GovAction DijkstraEra) v "gov_action"
-      xdescribe "fix TxCert" $ do
-        cddlRoundTripCborSpec @(TxCert DijkstraEra) v "certificate"
-      describe "DecCBOR instances equivalence via CDDL" $ do
-        cddlDecoderEquivalenceSpec @(TxBody TopTx DijkstraEra) v "transaction_body"
-        xdescribe "Fix decoder equivalence of TxAuxData" $ do
-          cddlDecoderEquivalenceSpec @(TxAuxData DijkstraEra) v "auxiliary_data"
-        cddlDecoderEquivalenceSpec @(Timelock DijkstraEra) v "native_script"
-        cddlDecoderEquivalenceSpec @(Data DijkstraEra) v "plutus_data"
-        cddlDecoderEquivalenceSpec @(Script DijkstraEra) v "script"
-        cddlDecoderEquivalenceSpec @(TxWits DijkstraEra) v "transaction_witness_set"
-        cddlDecoderEquivalenceSpec @(Redeemers DijkstraEra) v "redeemers"
-        xdescribe "Fix decoder equivalence of Tx" $ do
-          cddlDecoderEquivalenceSpec @(Tx TopTx DijkstraEra) v "transaction"
-    describe "Huddle" $ specWithHuddle dijkstraCDDL 100 $ do
+    specWithHuddle dijkstraCDDL 100 $ do
       huddleRoundTripCborSpec @(Value DijkstraEra) v "positive_coin"
       huddleRoundTripArbitraryValidate @(Value DijkstraEra) v "value"
-      xdescribe "fix MultiAsset" $ do
+      describe "MultiAsset" $ do
         huddleRoundTripCborSpec @(Value DijkstraEra) v "value"
       xdescribe "fix TxBody" $ do
         huddleRoundTripAnnCborSpec @(TxBody TopTx DijkstraEra) v "transaction_body"
@@ -148,7 +95,7 @@ spec = do
       huddleRoundTripCborSpec @(GovAction DijkstraEra) v "gov_action"
       -- TODO enable this once map/list expansion has been optimized in cuddle
       xdescribe "hangs" $ huddleRoundTripArbitraryValidate @(GovAction DijkstraEra) v "gov_action"
-      xdescribe "fix TxCert" $ do
+      describe "TxCert" $ do
         huddleRoundTripCborSpec @(TxCert DijkstraEra) v "certificate"
       -- TODO this fails because of the hard-coded `unit_interval` in the CDDL
       xdescribe "fix unit_interval" $

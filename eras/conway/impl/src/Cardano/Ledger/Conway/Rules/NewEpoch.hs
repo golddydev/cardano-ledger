@@ -41,6 +41,7 @@ import Cardano.Ledger.Conway.Governance (
 import Cardano.Ledger.Conway.Rules.Epoch (ConwayEpochEvent)
 import Cardano.Ledger.Conway.Rules.HardFork (ConwayHardForkEvent (..))
 import Cardano.Ledger.Credential (Credential)
+import Cardano.Ledger.Rewards (Reward)
 import Cardano.Ledger.Shelley.AdaPots (AdaPots (..), totalAdaPotsES)
 import Cardano.Ledger.Shelley.LedgerState
 import Cardano.Ledger.Shelley.Rewards (sumRewards)
@@ -127,7 +128,7 @@ instance
           (BlocksMade Map.empty)
           def
           SNothing
-          (PoolDistr Map.empty mempty)
+          def
           def
     ]
 

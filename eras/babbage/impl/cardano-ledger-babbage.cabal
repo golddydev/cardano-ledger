@@ -15,7 +15,7 @@ description:
 category: Network
 build-type: Simple
 data-files:
-  cddl-files/babbage.cddl
+  cddl/data/babbage.cddl
   golden/*.cbor
   golden/*.json
 
@@ -118,7 +118,6 @@ library cddl
     base,
     cardano-ledger-alonzo:cddl,
     cardano-ledger-babbage,
-    cuddle >=0.4,
     heredoc,
 
 executable generate-cddl
@@ -139,8 +138,6 @@ executable generate-cddl
     base,
     cardano-ledger-binary:testlib >=1.5,
     cddl,
-    directory,
-    filepath,
 
 library testlib
   exposed-modules:
@@ -148,7 +145,6 @@ library testlib
     Test.Cardano.Ledger.Babbage.Binary.Annotator
     Test.Cardano.Ledger.Babbage.Binary.Cddl
     Test.Cardano.Ledger.Babbage.Binary.Twiddle
-    Test.Cardano.Ledger.Babbage.CDDL
     Test.Cardano.Ledger.Babbage.Era
     Test.Cardano.Ledger.Babbage.Examples
     Test.Cardano.Ledger.Babbage.Imp
@@ -179,6 +175,7 @@ library testlib
     QuickCheck,
     base,
     bytestring,
+    cardano-data,
     cardano-ledger-alonzo:{cardano-ledger-alonzo, testlib},
     cardano-ledger-babbage,
     cardano-ledger-binary:{cardano-ledger-binary, testlib},
@@ -188,37 +185,13 @@ library testlib
     cardano-slotting,
     cardano-strict-containers,
     containers,
-    cuddle >=0.4,
     generic-random,
-    heredoc,
     microlens,
     microlens-ghc,
     plutus-ledger-api,
     small-steps >=1.1,
     time,
     tree-diff,
-
-executable huddle-cddl
-  main-is: Main.hs
-  hs-source-dirs: huddle-cddl
-  other-modules: Paths_cardano_ledger_babbage
-  default-language: Haskell2010
-  ghc-options:
-    -Wall
-    -Wcompat
-    -Wincomplete-record-updates
-    -Wincomplete-uni-patterns
-    -Wredundant-constraints
-    -Wpartial-fields
-    -Wunused-packages
-    -threaded
-    -rtsopts
-    -with-rtsopts=-N
-
-  build-depends:
-    base,
-    cardano-ledger-binary:testlib >=1.5,
-    testlib,
 
 executable gen-golden
   main-is: GenerateGoldenFileMain.hs
@@ -271,6 +244,7 @@ test-suite tests
     cardano-ledger-alonzo,
     cardano-ledger-alonzo:testlib,
     cardano-ledger-babbage,
+    cardano-ledger-babbage:cddl,
     cardano-ledger-binary:testlib,
     cardano-ledger-core,
     cardano-ledger-core:testlib,

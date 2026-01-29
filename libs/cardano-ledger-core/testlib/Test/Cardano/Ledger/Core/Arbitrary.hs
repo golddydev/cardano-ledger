@@ -62,7 +62,7 @@ import Cardano.Ledger.BaseTypes (
  )
 import qualified Cardano.Ledger.BaseTypes as BaseTypes
 import Cardano.Ledger.Binary (EncCBOR, Sized, mkSized)
-import Cardano.Ledger.Coin (Coin (..), CompactForm (..), DeltaCoin (..))
+import Cardano.Ledger.Coin (Coin (..), CompactForm (..), DeltaCoin (..), knownNonZeroCoin)
 import Cardano.Ledger.Core
 import Cardano.Ledger.Credential (Credential (..), Ptr (..), SlotNo32 (..), StakeReference (..))
 import Cardano.Ledger.Genesis (NoGenesis (..))
@@ -82,6 +82,7 @@ import Cardano.Ledger.Plutus.CostModels (
 import Cardano.Ledger.Plutus.Data (BinaryData, Data (..), Datum (..), dataToBinaryData)
 import Cardano.Ledger.Plutus.ExUnits (ExUnits (..), Prices (..))
 import Cardano.Ledger.Plutus.Language (Language (..), nonNativeLanguages)
+import Cardano.Ledger.Rewards (Reward (..), RewardType (..))
 import Cardano.Ledger.State
 import Cardano.Ledger.TxIn (TxId (..), TxIn (..))
 import Control.Monad (replicateM)
@@ -397,11 +398,19 @@ genStakeRefWith genPtr =
     , (15, pure StakeRefNull)
     ]
 
-instance Arbitrary RewardAccount where
-  arbitrary = RewardAccount <$> arbitrary <*> arbitrary
+instance Arbitrary AccountId where
+  arbitrary = AccountId <$> arbitrary
+  shrink = genericShrink
+
+instance Arbitrary AccountAddress where
+  arbitrary = AccountAddress <$> arbitrary <*> arbitrary
   shrink = genericShrink
 
 instance Arbitrary Withdrawals where
+  arbitrary = genericArbitraryU
+  shrink = genericShrink
+
+instance Arbitrary DirectDeposits where
   arbitrary = genericArbitraryU
   shrink = genericShrink
 
@@ -474,9 +483,7 @@ instance Arbitrary ChainAccountState where
 ------------------------------------------------------------------------------------------
 
 instance Arbitrary PoolDistr where
-  arbitrary = do
-    Positive denominator <- arbitrary
-    PoolDistr <$> arbitrary <*> pure (CompactCoin denominator)
+  arbitrary = PoolDistr <$> arbitrary <*> arbitrary
 
 instance Arbitrary IndividualPoolStake where
   arbitrary = IndividualPoolStake <$> arbitrary <*> arbitrary <*> arbitrary
@@ -501,6 +508,8 @@ deriving instance (EraTxOut era, Arbitrary (TxOut era)) => Arbitrary (UTxO era)
 deriving instance (Era era, Arbitrary (PParamsHKD Identity era)) => Arbitrary (PParams era)
 
 deriving instance (Era era, Arbitrary (PParamsHKD StrictMaybe era)) => Arbitrary (PParamsUpdate era)
+
+deriving instance Arbitrary CoinPerByte
 
 ------------------------------------------------------------------------------------------
 -- Cardano.Ledger.DRep -------------------------------------------------------------------
@@ -642,12 +651,53 @@ instance Arbitrary FutureGenDeleg where
 -- Cardano.Ledger.EpochBoundary ----------------------------------------------------------
 ------------------------------------------------------------------------------------------
 
-instance Arbitrary SnapShot where
+instance Arbitrary StakePoolSnapShot where
   arbitrary =
-    SnapShot
+    StakePoolSnapShot
       <$> arbitrary
       <*> arbitrary
       <*> arbitrary
+      <*> arbitrary
+      <*> arbitrary
+      <*> arbitrary
+      <*> arbitrary
+      <*> arbitrary
+      <*> arbitrary
+      <*> arbitrary
+
+instance Arbitrary SnapShot where
+  arbitrary = do
+    ssStake@(Stake stake) <- arbitrary
+    let ssTotalActiveStake = sumAllStake ssStake `BaseTypes.nonZeroOr` (knownNonZeroCoin @1)
+    ssPoolParams <- arbitrary
+    ssDelegations <-
+      if VMap.null ssPoolParams
+        then pure mempty
+        else fmap VMap.fromList $ listOf $ do
+          cred <-
+            if VMap.null stake
+              then arbitrary
+              else
+                let pickFromStake = do
+                      ix <- chooseInt (0, VMap.size stake - 1)
+                      pure $ fst $ VMap.elemAt ix stake
+                 in frequency [(1, arbitrary), (20, pickFromStake)]
+          ix <- chooseInt (0, VMap.size ssPoolParams - 1)
+          pure (cred, fst $ VMap.elemAt ix ssPoolParams)
+    deposit <- arbitrary
+    let delegationsPerStakePool :: Map (KeyHash StakePool) (Set (Credential Staking))
+        delegationsPerStakePool =
+          VMap.foldlWithKey
+            ( \acc cred stakePool ->
+                Map.insertWith (<>) stakePool (Set.singleton cred) acc
+            )
+            mempty
+            ssDelegations
+        stakePoolSnapShotFromParams poolId =
+          mkStakePoolSnapShot ssStake ssTotalActiveStake
+            . mkStakePoolState deposit (Map.findWithDefault mempty poolId delegationsPerStakePool)
+        ssStakePoolsSnapShot = VMap.mapWithKey stakePoolSnapShotFromParams ssPoolParams
+    pure SnapShot {..}
 
 instance Arbitrary SnapShots where
   arbitrary = do
@@ -818,5 +868,6 @@ genericShrinkMemo ::
   , RecursivelyShrink (Rep (RawType (a era)))
   , GSubterms (Rep (RawType (a era))) (RawType (a era))
   ) =>
-  a era -> [a era]
+  a era ->
+  [a era]
 genericShrinkMemo = fmap (mkMemoizedEra @era) . genericShrink . getMemoRawType

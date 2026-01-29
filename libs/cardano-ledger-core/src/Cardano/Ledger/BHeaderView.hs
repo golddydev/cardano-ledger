@@ -1,12 +1,15 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
 module Cardano.Ledger.BHeaderView where
 
-import Cardano.Ledger.BaseTypes (BoundedRational (..), UnitInterval)
+import Cardano.Ledger.BaseTypes (BoundedRational (..), Nonce, UnitInterval)
 import Cardano.Ledger.Hashes (EraIndependentBlockBody, HASH, Hash, KeyHash, KeyRole (..))
 import Cardano.Ledger.Slot (SlotNo (..), (-*))
+import Control.DeepSeq (NFData)
 import Data.Word (Word32)
+import GHC.Generics (Generic)
 
 -- | 'BHeaderView' provides an interface between block headers
 -- from different Cardano protocols and packages that should be
@@ -29,7 +32,13 @@ data BHeaderView = BHeaderView
   -- ^ The purported hash of the block body.
   , bhviewSlot :: SlotNo
   -- ^ The slot for which this block was submitted to the chain.
+  , bhviewPrevEpochNonce :: Maybe Nonce
+  -- ^ The previous epoch nonce, needed to validate Peras certificates
+  -- contained in blocks.
   }
+  deriving (Generic)
+
+instance NFData BHeaderView
 
 -- | Determine if the given slot is reserved for the overlay schedule.
 isOverlaySlot ::

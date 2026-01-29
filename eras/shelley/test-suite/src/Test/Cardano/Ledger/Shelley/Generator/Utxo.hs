@@ -17,7 +17,6 @@ module Test.Cardano.Ledger.Shelley.Generator.Utxo (
   pickRandomFromMap,
 ) where
 
-import Cardano.Ledger.Address (Addr (..), RewardAccount (..))
 import Cardano.Ledger.BaseTypes (
   Network (..),
   inject,
@@ -32,7 +31,6 @@ import Cardano.Ledger.Keys (asWitness)
 import Cardano.Ledger.Shelley.LedgerState (LedgerState (..), UTxOState (..))
 import Cardano.Ledger.Shelley.Rules (DelplEnv, LedgerEnv (..))
 import Cardano.Ledger.Shelley.State
-import Cardano.Ledger.Shelley.TxBody (Withdrawals (..))
 import Cardano.Ledger.TxIn (TxIn (..))
 import Cardano.Ledger.Val (Val (..), sumVal, (<+>), (<->), (<×>))
 import Cardano.Protocol.Crypto (Crypto)
@@ -387,7 +385,7 @@ genNextDelta
         deltaScriptCost = foldr accum (Coin 0) extraScripts
           where
             accum (s1, _) ans = genEraScriptCost @era pparams s1 <+> ans
-        deltaFee = draftSize <×> pparams ^. ppMinFeeAL <+> deltaScriptCost
+        deltaFee = draftSize <×> fromCompact (unCoinPerByte (pparams ^. ppTxFeePerByteL)) <+> deltaScriptCost
         totalFee = baseTxFee <+> deltaFee :: Coin
         remainingFee = totalFee <-> dfees :: Coin
         changeAmount = getChangeAmount change
@@ -748,7 +746,7 @@ genInputs (minNumGenInputs, maxNumGenInputs) keyHashMap payScriptMap (UTxO utxo)
           Right $ findPayScriptFromAddr @era addr payScriptMap
         _ -> error "unsupported address"
 
--- | Select a subset of the reward accounts to use for reward withdrawals.
+-- | Select a subset of the account addresses to use for reward withdrawals.
 genWithdrawals ::
   forall era.
   Constants ->
@@ -756,7 +754,7 @@ genWithdrawals ::
   Map (KeyHash Staking) (KeyPair Staking) ->
   Map (Credential Staking) Coin ->
   Gen
-    ( [(RewardAccount, Coin)]
+    ( [(AccountAddress, Coin)]
     , ([KeyPair Witness], [(Script era, Script era)])
     )
 genWithdrawals
@@ -786,12 +784,13 @@ genWithdrawals
         ]
     pure (a, b)
     where
-      toRewardAccount (rwd, coinx) = (RewardAccount Testnet rwd, coinx)
+      toAccountAddress (rwd, coinx) = (AccountAddress Testnet (AccountId rwd), coinx)
       genWrdls withdrawals_ = do
-        selectedWrdls <- map toRewardAccount <$> QC.sublistOf withdrawals_
+        selectedWrdls <- map toAccountAddress <$> QC.sublistOf withdrawals_
         let txwits =
               mkWithdrawalsWits @era ksIndexedStakeScripts ksIndexedStakingKeys
-                . raCredential
+                . unAccountId
+                . aaAccountId
                 . fst
                 <$> selectedWrdls
         return (selectedWrdls, Either.partitionEithers txwits)

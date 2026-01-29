@@ -2,8 +2,26 @@
 
 ## 1.18.0.0
 
+* Change `updateNonMyopic`, `likelihoodsNM`, `rewLikelihoods` and `fvPoolRewardInfo` to use `VMap`
+* Add `calcNonMyopicMemberReward` and deprecate `nonMyopicMemberRew` in its favor.
+* Add `calcStakePoolDesirability` and deprecate `desirability` in its favor.
+* Change type signature of `mkPoolRewardInfo`, `getTopRankedPools`
+* Move delegatee registration validation from `DELEGS` to `DELEG` rule:
+  - Add `DelegateeNotRegisteredDELEG` to `ShelleyDelegPredFailure`
+  - Remove `DelegateeNotRegisteredDELEG` from `ShelleyDelegsPredFailure`
+  - Remove `validateStakePoolDelegateeRegistered` function from `Cardano.Ledger.Shelley.Rules.Delegs`
+* Expose `poolTransition` from `Pool`
+* Change the type `ApplyTxError era` to be a data family of the `ApplyTx era` class, with its constructor renamed to `ShelleyApplyTxError` for the Shelley era
+* Renamed:
+  - `sppMinFeeA` -> `sppTxFeePerByte`
+  - `ppMinFeeA` -> `ppTxFeePerByte`
+  - `sppMinFeeB` -> `sppTxFeeFixed`
+  - `ppMinFeeB` -> `ppTxFeeFixed`
+* Changed type of `sppMinFeeA` to `CoinPerByte`:
+* Change sets containing errors into `NonEmptySet` for `ShelleyUtxoPredFailure`, `ShelleyUtxowPredFailure`
+* Change all maps into `NonEmptyMap` for `ShelleyLedgerPredFailure`
+* Change all lists into `NonEmpty` for `ShelleyUtxoPredFailure`, `ShelleyUtxowPredFailure`
 * Changed the type of the following fields to `CompactForm Coin` in `ShelleyPParams`:
-  - `sppMinFeeA`
   - `sppMinFeeB`
   - `sppKeyDeposit`
   - `sppMinUTxOValue`
@@ -42,6 +60,8 @@
 
 ### `cddl`
 
+* Add `HuddleRule1` instances for sets.
+* Move `cddl-files` to `cddl/data`.
 * Export `scriptAllGroup` and `scriptAnyGroup`.
 * Add `HuddleSpec` module with `Huddle{Rule|Group}` instances for all types.
 * Add and export smart constructors for transaction components, certificates, pool infrastructure, and block structures.
@@ -49,6 +69,38 @@
 
 ### `testlib`
 
+* Renamed:
+  - `maxMinFeeA` -> `maxTxFeePerByte`
+  - `maxMinFeeB` -> `maxTxFeeFixed`
+* Add:
+  - `submitBlock_`
+  - `submitBlock`
+  - `submitFailingBlock`
+  - `submitFailingBlockM`
+  - `withTxsInBlock_`
+  - `withTxsInBlock`
+  - `withTxsInFailingBlock`
+  - `withTxsInFailingBlockM`
+  - `tryTxsInBlock`
+* Remove `tryRunImpBBODY`
+* Add `Eq` instances for:
+  - `AlonzoBbodyEvent`
+  - `ShelleyBbodyEvent`
+  - `ShelleyLedgersEvent`
+* Add `NFData` and `ToExpr` constraints and instances for:
+  - `AlonzoBlockBody`
+  - `AlonzoBbodyPredFailure`
+  - `ConwayBbodyPredFailure`
+  - `ShelleyBlockBody`
+  - `ShelleyBbodyPredFailure`
+  - `BHeaderView`
+  - `Block`
+* Add a `Generic` instance for `BHeaderView`
+* Add `impEventsFrom`, `impRecordSubmittedTxs`
+* Change type of `ImpTestState.impEvents` field from `[]` to `Seq`
+* Remove `huddle-cddl` and the `CDDL` modules.
+* Add `ToCBOR (StashedAVVMAddresses era)` superclass to `ShelleyEraTest`
+* Add `duplicateDelegCertsTxBody`
 * Renamed `impLastTick` to `impCurSlotNo` and `impLastTickG` to `impCurSlotNoG`
 * Add CDDL certificate definitions: `account_registration_cert`, `account_unregistration_cert`, `delegation_to_stake_pool_cert`
 * Add CDDL pool certificate definitions via `mkPoolRules`: `pool_registration_cert`, `pool_retirement_cert`

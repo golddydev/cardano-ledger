@@ -80,9 +80,11 @@ import Control.Monad.Trans.Reader (asks)
 import Control.State.Transition.Extended
 import Data.ByteString (ByteString)
 import Data.Foldable (sequenceA_)
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Set.NonEmpty (NonEmptySet)
 import Data.Typeable (Typeable)
 import GHC.Generics (Generic)
 import Lens.Micro
@@ -97,30 +99,25 @@ data AlonzoUtxowPredFailure era
   = ShelleyInAlonzoUtxowPredFailure (ShelleyUtxowPredFailure era)
   | -- | List of scripts for which no redeemers were supplied
     MissingRedeemers
-      [(PlutusPurpose AsItem era, ScriptHash)]
+      (NonEmpty (PlutusPurpose AsItem era, ScriptHash))
   | MissingRequiredDatums
-      -- TODO: Make this NonEmpty #4066
-
       -- | Set of missing data hashes
-      (Set DataHash)
+      (NonEmptySet DataHash)
       -- | Set of received data hashes
       (Set DataHash)
   | NotAllowedSupplementalDatums
-      -- TODO: Make this NonEmpty #4066
-
       -- | Set of unallowed data hashes
-      (Set DataHash)
+      (NonEmptySet DataHash)
       -- | Set of acceptable supplemental data hashes
       (Set DataHash)
   | PPViewHashesDontMatch
       (Mismatch RelEQ (StrictMaybe ScriptIntegrityHash))
   | -- | Set of transaction inputs that are TwoPhase scripts, and should have a DataHash but don't
     UnspendableUTxONoDatumHash
-      -- TODO: Make this NonEmpty #4066
-      (Set TxIn)
+      (NonEmptySet TxIn)
   | -- | List of redeemers not needed
     ExtraRedeemers
-      [PlutusPurpose AsIx era]
+      (NonEmpty (PlutusPurpose AsIx era))
   | -- | The computed script integrity hash does not match the provided script integrity hash
     ScriptIntegrityHashMismatch
       (Mismatch RelEQ (StrictMaybe ScriptIntegrityHash))
@@ -245,15 +242,11 @@ missingRequiredDatums utxo tx = do
       (okSupplimentalDHs, notOkSupplimentalDHs) =
         Set.partition (`Set.member` allowedSupplementalDataHashes) supplimentalDatumHashes
   sequenceA_
-    [ failureUnless
-        (Set.null txInsNoDataHash)
-        (UnspendableUTxONoDatumHash txInsNoDataHash)
-    , failureUnless
-        (Set.null unmatchedDatumHashes)
-        (MissingRequiredDatums unmatchedDatumHashes txHashes)
-    , failureUnless
-        (Set.null notOkSupplimentalDHs)
-        (NotAllowedSupplementalDatums notOkSupplimentalDHs okSupplimentalDHs)
+    [ failureOnNonEmptySet txInsNoDataHash UnspendableUTxONoDatumHash
+    , failureOnNonEmptySet unmatchedDatumHashes (\unmatched -> MissingRequiredDatums unmatched txHashes)
+    , failureOnNonEmptySet
+        notOkSupplimentalDHs
+        (\notOk -> NotAllowedSupplementalDatums notOk okSupplimentalDHs)
     ]
 
 -- ==================
@@ -280,8 +273,8 @@ hasExactSetOfRedeemers tx (ScriptsProvided scriptsProvided) (AlonzoScriptsNeeded
           redeemersNeeded
           fst
   sequenceA_
-    [ failureUnless (null extraRdmrs) (ExtraRedeemers extraRdmrs)
-    , failureUnless (null missingRdmrs) (MissingRedeemers (map snd missingRdmrs))
+    [ failureOnNonEmpty extraRdmrs ExtraRedeemers
+    , failureOnNonEmpty (map snd missingRdmrs) MissingRedeemers
     ]
 
 -- =======================

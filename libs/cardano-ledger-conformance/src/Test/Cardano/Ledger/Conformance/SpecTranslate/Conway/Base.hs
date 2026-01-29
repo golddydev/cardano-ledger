@@ -23,7 +23,7 @@ module Test.Cardano.Ledger.Conformance.SpecTranslate.Conway.Base (
   SpecTranslate (..),
 ) where
 
-import Cardano.Ledger.Address (RewardAccount (..))
+import Cardano.Ledger.Address (accountAddressCredentialL)
 import Cardano.Ledger.Allegra.Scripts (
   Timelock,
   pattern RequireTimeExpire,
@@ -210,8 +210,8 @@ instance
   type SpecRep (ConwayPParams Identity era) = Agda.PParams
 
   toSpecRep cpp@ConwayPParams {..} = do
-    ppA <- toSpecRep cppMinFeeA
-    ppB <- toSpecRep cppMinFeeB
+    ppA <- toSpecRep cppTxFeePerByte
+    ppB <- toSpecRep cppTxFeeFixed
     ppA0 <- toSpecRep cppA0
     ppMinFeeRefScriptCoinsPerByte <- toSpecRep cppMinFeeRefScriptCostPerByte
     ppCollateralPercentage <- toSpecRep cppCollateralPercentage
@@ -333,7 +333,7 @@ instance SpecTranslate ctx StakePoolParams where
       <*> toSpecRep sppCost
       <*> toSpecRep sppMargin
       <*> toSpecRep sppPledge
-      <*> toSpecRep (raCredential sppRewardAccount)
+      <*> toSpecRep (sppAccountAddress ^. accountAddressCredentialL)
 
 instance SpecTranslate ctx DRep where
   type SpecRep DRep = Agda.VDeleg
@@ -444,8 +444,8 @@ instance SpecTranslate ctx (ConwayPParams StrictMaybe era) where
   type SpecRep (ConwayPParams StrictMaybe era) = Agda.PParamsUpdate
 
   toSpecRep (ConwayPParams {..}) = do
-    ppuA <- toSpecRep cppMinFeeA
-    ppuB <- toSpecRep cppMinFeeB
+    ppuA <- toSpecRep cppTxFeePerByte
+    ppuB <- toSpecRep cppTxFeeFixed
     ppuA0 <- toSpecRep cppA0
     ppuMinFeeRefScriptCoinsPerByte <- toSpecRep cppMinFeeRefScriptCostPerByte
     ppuCollateralPercentage <- toSpecRep cppCollateralPercentage

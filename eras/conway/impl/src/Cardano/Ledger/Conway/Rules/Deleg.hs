@@ -19,6 +19,7 @@ module Cardano.Ledger.Conway.Rules.Deleg (
   ConwayDELEG,
   ConwayDelegPredFailure (..),
   ConwayDelegEnv (..),
+  conwayDelegTransition,
   processDelegation,
 ) where
 
@@ -105,7 +106,7 @@ data ConwayDelegPredFailure era
   = IncorrectDepositDELEG Coin
   | StakeKeyRegisteredDELEG (Credential Staking)
   | StakeKeyNotRegisteredDELEG (Credential Staking)
-  | StakeKeyHasNonZeroRewardAccountBalanceDELEG Coin
+  | StakeKeyHasNonZeroAccountBalanceDELEG Coin
   | DelegateeDRepNotRegisteredDELEG (Credential DRepRole)
   | DelegateeStakePoolNotRegisteredDELEG (KeyHash StakePool)
   | DepositIncorrectDELEG (Mismatch RelEQ Coin)
@@ -131,8 +132,8 @@ instance Era era => EncCBOR (ConwayDelegPredFailure era) where
         Sum (StakeKeyRegisteredDELEG @era) 2 !> To stakeCred
       StakeKeyNotRegisteredDELEG stakeCred ->
         Sum (StakeKeyNotRegisteredDELEG @era) 3 !> To stakeCred
-      StakeKeyHasNonZeroRewardAccountBalanceDELEG mCoin ->
-        Sum (StakeKeyHasNonZeroRewardAccountBalanceDELEG @era) 4 !> To mCoin
+      StakeKeyHasNonZeroAccountBalanceDELEG mCoin ->
+        Sum (StakeKeyHasNonZeroAccountBalanceDELEG @era) 4 !> To mCoin
       DelegateeDRepNotRegisteredDELEG delegatee ->
         Sum (DelegateeDRepNotRegisteredDELEG @era) 5 !> To delegatee
       DelegateeStakePoolNotRegisteredDELEG delegatee ->
@@ -147,7 +148,7 @@ instance Era era => DecCBOR (ConwayDelegPredFailure era) where
     1 -> SumD IncorrectDepositDELEG <! From
     2 -> SumD StakeKeyRegisteredDELEG <! From
     3 -> SumD StakeKeyNotRegisteredDELEG <! From
-    4 -> SumD StakeKeyHasNonZeroRewardAccountBalanceDELEG <! From
+    4 -> SumD StakeKeyHasNonZeroAccountBalanceDELEG <! From
     5 -> SumD DelegateeDRepNotRegisteredDELEG <! From
     6 -> SumD DelegateeStakePoolNotRegisteredDELEG <! From
     7 -> SumD DepositIncorrectDELEG <! From
@@ -156,12 +157,13 @@ instance Era era => DecCBOR (ConwayDelegPredFailure era) where
 
 instance
   ( EraPParams era
+  , EraCertState era
+  , ConwayEraCertState era
   , State (EraRule "DELEG" era) ~ CertState era
   , Signal (EraRule "DELEG" era) ~ ConwayDelegCert
   , Environment (EraRule "DELEG" era) ~ ConwayDelegEnv era
   , EraRule "DELEG" era ~ ConwayDELEG era
-  , EraCertState era
-  , ConwayEraCertState era
+  , InjectRuleFailure "DELEG" ConwayDelegPredFailure era
   ) =>
   STS (ConwayDELEG era)
   where
@@ -172,10 +174,18 @@ instance
   type PredicateFailure (ConwayDELEG era) = ConwayDelegPredFailure era
   type Event (ConwayDELEG era) = Void
 
-  transitionRules = [conwayDelegTransition @era]
+  transitionRules = [conwayDelegTransition]
 
 conwayDelegTransition ::
-  (EraPParams era, ConwayEraCertState era) => TransitionRule (ConwayDELEG era)
+  forall rule era.
+  ( EraPParams era
+  , ConwayEraCertState era
+  , Signal (EraRule rule era) ~ ConwayDelegCert
+  , Environment (EraRule rule era) ~ ConwayDelegEnv era
+  , State (EraRule rule era) ~ CertState era
+  , InjectRuleFailure rule ConwayDelegPredFailure era
+  ) =>
+  TransitionRule (EraRule rule era)
 conwayDelegTransition = do
   TRC
     ( ConwayDelegEnv pp pools
@@ -193,24 +203,29 @@ conwayDelegTransition = do
         == ppKeyDeposit
           ?! if hardforkConwayDELEGIncorrectDepositsAndRefunds pv
             then
-              DepositIncorrectDELEG
-                Mismatch
-                  { mismatchSupplied = deposit
-                  , mismatchExpected = ppKeyDeposit
-                  }
-            else IncorrectDepositDELEG deposit
+              injectFailure
+                ( DepositIncorrectDELEG
+                    Mismatch
+                      { mismatchSupplied = deposit
+                      , mismatchExpected = ppKeyDeposit
+                      }
+                )
+            else injectFailure $ IncorrectDepositDELEG deposit
     checkStakeKeyNotRegistered stakeCred =
-      not (isAccountRegistered stakeCred accounts) ?! StakeKeyRegisteredDELEG stakeCred
+      not (isAccountRegistered stakeCred accounts)
+        ?! injectFailure (StakeKeyRegisteredDELEG stakeCred)
     checkStakeDelegateeRegistered =
       let checkPoolRegistered targetPool =
-            targetPool `Map.member` pools ?! DelegateeStakePoolNotRegisteredDELEG targetPool
+            targetPool
+              `Map.member` pools
+              ?! injectFailure (DelegateeStakePoolNotRegisteredDELEG targetPool)
           checkDRepRegistered = \case
             DRepAlwaysAbstain -> pure ()
             DRepAlwaysNoConfidence -> pure ()
             DRepCredential targetDRep -> do
               let dReps = certState ^. certVStateL . vsDRepsL
               unless (hardforkConwayBootstrapPhase (pp ^. ppProtocolVersionL)) $
-                targetDRep `Map.member` dReps ?! DelegateeDRepNotRegisteredDELEG targetDRep
+                targetDRep `Map.member` dReps ?! injectFailure (DelegateeDRepNotRegisteredDELEG targetDRep)
        in \case
             DelegStake targetPool -> checkPoolRegistered targetPool
             DelegStakeVote targetPool targetDRep ->
@@ -236,22 +251,26 @@ conwayDelegTransition = do
             Just $
               if hardforkConwayDELEGIncorrectDepositsAndRefunds pv
                 then
-                  RefundIncorrectDELEG
-                    Mismatch
-                      { mismatchSupplied = suppliedRefund
-                      , mismatchExpected = expectedRefund
-                      }
-                else IncorrectDepositDELEG suppliedRefund
+                  injectFailure
+                    ( RefundIncorrectDELEG
+                        Mismatch
+                          { mismatchSupplied = suppliedRefund
+                          , mismatchExpected = expectedRefund
+                          }
+                    )
+                else injectFailure $ IncorrectDepositDELEG suppliedRefund
           checkStakeKeyHasZeroRewardBalance = do
             accountState <- mAccountState
             let balanceCompact = accountState ^. balanceAccountStateL
             guard (balanceCompact /= mempty)
             Just $ fromCompact balanceCompact
       failOnJust checkInvalidRefund id
-      failOnJust checkStakeKeyHasZeroRewardBalance StakeKeyHasNonZeroRewardAccountBalanceDELEG
+      failOnJust
+        checkStakeKeyHasZeroRewardBalance
+        (injectFailure . StakeKeyHasNonZeroAccountBalanceDELEG)
       case mAccountState of
         Nothing -> do
-          failBecause $ StakeKeyNotRegisteredDELEG stakeCred
+          failBecause $ injectFailure (StakeKeyNotRegisteredDELEG stakeCred)
           pure certState
         Just accountState ->
           pure $
@@ -263,7 +282,7 @@ conwayDelegTransition = do
       checkStakeDelegateeRegistered delegatee
       case lookupAccountStateIntern stakeCred accounts of
         Nothing -> do
-          failBecause $ StakeKeyNotRegisteredDELEG stakeCred
+          failBecause $ injectFailure (StakeKeyNotRegisteredDELEG stakeCred)
           pure certState
         Just (internedCred, accountState) -> do
           pure $

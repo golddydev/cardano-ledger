@@ -130,7 +130,7 @@ library
     nothunks >=0.1.5 && <0.4,
     partial-order,
     plutus-core,
-    plutus-ledger-api,
+    plutus-ledger-api >=1.56,
     prettyprinter,
     primitive,
     quiet,
@@ -185,7 +185,7 @@ library cddl
   build-depends:
     base,
     cardano-ledger-core,
-    cuddle >=0.4,
+    cuddle >=1.1,
     heredoc,
     text,
 
@@ -197,7 +197,6 @@ library testlib
     Test.Cardano.Ledger.Core.Arbitrary
     Test.Cardano.Ledger.Core.Binary
     Test.Cardano.Ledger.Core.Binary.Annotator
-    Test.Cardano.Ledger.Core.Binary.CDDL
     Test.Cardano.Ledger.Core.Binary.RoundTrip
     Test.Cardano.Ledger.Core.JSON
     Test.Cardano.Ledger.Core.KeyPair
@@ -227,17 +226,16 @@ library testlib
     bytestring,
     cardano-crypto-class,
     cardano-crypto-wrapper:{cardano-crypto-wrapper, testlib},
+    cardano-data:testlib,
     cardano-ledger-binary:{cardano-ledger-binary, testlib} >=1.5,
     cardano-ledger-byron:{cardano-ledger-byron, testlib},
     cardano-ledger-core,
     cardano-slotting,
     containers,
-    cuddle >=0.4,
     deepseq,
     generic-random,
     genvalidity,
     hedgehog-quickcheck,
-    heredoc,
     hspec,
     microlens,
     mtl,
@@ -313,6 +311,7 @@ test-suite tests
     genvalidity,
     genvalidity-scientific,
     plutus-ledger-api,
+    quickcheck-classes,
     quickcheck-instances,
     scientific,
     testlib,

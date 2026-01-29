@@ -15,17 +15,14 @@ module Test.Cardano.Ledger.Dijkstra.Binary.Annotator (
 
 ) where
 
-import Cardano.Ledger.Address (Withdrawals (..))
 import Cardano.Ledger.Allegra.Scripts (invalidBeforeL, invalidHereAfterL)
 import Cardano.Ledger.BaseTypes
 import Cardano.Ledger.Binary
 import Cardano.Ledger.Binary.Coders
 import Cardano.Ledger.Coin (decodePositiveCoin)
-import Cardano.Ledger.Conway.Governance (
-  VotingProcedures (..),
- )
-import Cardano.Ledger.Core
+import Cardano.Ledger.Conway.Governance (VotingProcedures (..))
 import Cardano.Ledger.Dijkstra (DijkstraEra)
+import Cardano.Ledger.Dijkstra.Core
 import Cardano.Ledger.Dijkstra.Scripts
 import Cardano.Ledger.Dijkstra.Tx (DijkstraTx (..), Tx (..))
 import Cardano.Ledger.Dijkstra.TxBody
@@ -131,6 +128,12 @@ instance Typeable l => DecCBOR (DijkstraTxBodyRaw l DijkstraEra) where
                 Map.null
                 (requiredTopLevelGuardsDijkstraTxBodyRawL .~)
                 (D (decodeMap decCBOR (decodeNullStrictMaybe decCBOR)))
+        25 ->
+          fieldGuarded
+            (emptyFailure "DirectDeposits" "non-empty")
+            (null . unDirectDeposits)
+            (directDepositsDijkstraTxBodyRawL .~)
+            From
         n -> invalidField n
       requiredFields :: STxBothLevels l DijkstraEra -> [(Word, String)]
       requiredFields sTxLevel
@@ -165,12 +168,24 @@ instance Typeable l => DecCBOR (DijkstraTx l DijkstraEra) where
   decCBOR =
     withSTxBothLevels @l $ \case
       STopTx ->
-        decode $
-          RecD DijkstraTx
-            <! From
-            <! From
-            <! From
-            <! D (decodeNullStrictMaybe decCBOR)
+        decodeListLen >>= \case
+          4 -> do
+            body <- decCBOR
+            wits <- decCBOR
+            isValid <-
+              decCBOR
+                >>= \case
+                  True -> pure (IsValid True)
+                  False -> fail "value `false` not allowed for `isValid`"
+            aux <- decodeNullStrictMaybe decCBOR
+            pure $ DijkstraTx body wits isValid aux
+          3 -> do
+            DijkstraTx
+              <$> decCBOR
+              <*> decCBOR
+              <*> pure (IsValid True)
+              <*> decodeNullStrictMaybe decCBOR
+          n -> fail $ "Unexpected list length: " <> show n <> ". Expected: 4 or 3."
       SSubTx ->
         decode $
           RecD DijkstraSubTx

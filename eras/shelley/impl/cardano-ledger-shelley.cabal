@@ -7,7 +7,7 @@ author: IOHK
 synopsis: Shelley Ledger Executable Model
 build-type: Simple
 data-files:
-  cddl-files/shelley.cddl
+  cddl/data/shelley.cddl
   golden/*.json
 
 extra-source-files: CHANGELOG.md
@@ -122,6 +122,7 @@ library
     microlens,
     mtl,
     nothunks,
+    primitive,
     quiet,
     small-steps >=1.1.1,
     text,
@@ -153,7 +154,6 @@ library cddl
     base,
     cardano-ledger-core:cddl,
     cardano-ledger-shelley,
-    cuddle >=0.4,
     heredoc,
 
 executable generate-cddl
@@ -174,8 +174,6 @@ executable generate-cddl
     base,
     cardano-ledger-binary:testlib >=1.4,
     cddl,
-    directory,
-    filepath,
 
 library testlib
   exposed-modules:
@@ -184,7 +182,6 @@ library testlib
     Test.Cardano.Ledger.Shelley.Binary.Cddl
     Test.Cardano.Ledger.Shelley.Binary.Golden
     Test.Cardano.Ledger.Shelley.Binary.RoundTrip
-    Test.Cardano.Ledger.Shelley.CDDL
     Test.Cardano.Ledger.Shelley.Constants
     Test.Cardano.Ledger.Shelley.Era
     Test.Cardano.Ledger.Shelley.Examples
@@ -221,7 +218,7 @@ library testlib
     cardano-crypto,
     cardano-crypto-class,
     cardano-crypto-wrapper,
-    cardano-data,
+    cardano-data:{cardano-data, testlib},
     cardano-ledger-binary:{cardano-ledger-binary, testlib},
     cardano-ledger-byron:{cardano-ledger-byron, testlib},
     cardano-ledger-core:{cardano-ledger-core, testlib},
@@ -229,11 +226,10 @@ library testlib
     cardano-slotting:{cardano-slotting, testlib},
     cardano-strict-containers,
     containers,
-    cuddle >=0.4,
     data-default,
     generic-random,
     hedgehog-quickcheck,
-    heredoc,
+    mempack,
     microlens,
     microlens-mtl,
     mtl,
@@ -247,28 +243,6 @@ library testlib
     tree-diff,
     unliftio,
     vector-map,
-
-executable huddle-cddl
-  main-is: Main.hs
-  hs-source-dirs: huddle-cddl
-  other-modules: Paths_cardano_ledger_shelley
-  default-language: Haskell2010
-  ghc-options:
-    -Wall
-    -Wcompat
-    -Wincomplete-record-updates
-    -Wincomplete-uni-patterns
-    -Wredundant-constraints
-    -Wpartial-fields
-    -Wunused-packages
-    -threaded
-    -rtsopts
-    -with-rtsopts=-N
-
-  build-depends:
-    base,
-    cardano-ledger-binary:testlib >=1.4,
-    testlib,
 
 test-suite tests
   type: exitcode-stdio-1.0
@@ -299,4 +273,5 @@ test-suite tests
     cardano-ledger-binary:testlib,
     cardano-ledger-core:{cardano-ledger-core, testlib},
     cardano-ledger-shelley,
+    cardano-ledger-shelley:cddl,
     testlib,

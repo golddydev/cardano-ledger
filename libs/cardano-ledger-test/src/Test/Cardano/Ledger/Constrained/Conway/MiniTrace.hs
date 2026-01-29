@@ -33,15 +33,15 @@ module Test.Cardano.Ledger.Constrained.Conway.MiniTrace (
   constrainedUtxo,
 ) where
 
-import Cardano.Ledger.Address (RewardAccount)
 import Cardano.Ledger.BaseTypes (
   EpochNo (..),
   Network (..),
   ShelleyBase,
   addEpochInterval,
   natVersion,
+  nonZeroOr,
  )
-import Cardano.Ledger.Coin (Coin, CompactForm (..))
+import Cardano.Ledger.Coin (Coin (..), CompactForm (..), knownNonZeroCoin)
 import Cardano.Ledger.Conway (ConwayEra)
 import Cardano.Ledger.Conway.Governance (
   EnactState (..),
@@ -82,7 +82,6 @@ import Test.Cardano.Ledger.Constrained.Conway (
   UtxoExecContext,
   certEnvSpec,
   certsEnvSpec,
-  coerce_,
   committeeMinSize_,
   conwayDelegCertSpec,
   conwayTxCertSpec,
@@ -228,7 +227,8 @@ genDelegCtx = do
 
 certStateSpec_ ::
   EraSpecCert era =>
-  (WitUniv era, ConwayCertGenContext era) -> Specification (CertState era)
+  (WitUniv era, ConwayCertGenContext era) ->
+  Specification (CertState era)
 certStateSpec_ (u, ConwayCertGenContext {..}) =
   certStateSpec u (Map.keysSet ccccDelegatees) ccccWithdrawals
 
@@ -286,7 +286,10 @@ ratifyEnvSpec govActionMap =
               individualStakesCompact
               (fmap (\IndividualPoolStake {individualTotalPoolStake = CompactCoin c} -> c) . Map.elems)
               ( \ [var| stakes |] ->
-                  [ coerce_ totalStakeCompact ==. sum_ stakes
+                  [ reify
+                      (sum_ stakes)
+                      ((`nonZeroOr` knownNonZeroCoin @1) . Coin . toInteger)
+                      (==. totalStakeCompact)
                   ]
               )
         , assert $ not_ (null_ individualStakesCompact)
@@ -453,7 +456,7 @@ spec = do
         (const "")
 
 data ConwayCertGenContext era = ConwayCertGenContext
-  { ccccWithdrawals :: !(Map RewardAccount Coin)
+  { ccccWithdrawals :: !(Map AccountAddress Coin)
   , ccccVotes :: !(VotingProcedures era)
   , ccccDelegatees :: !(Map (Credential DRepRole) (Set (Credential Staking)))
   }
@@ -474,9 +477,9 @@ conwayCertExecContextSpec univ wdrlsize = constrained' $
     , assert
         [ assert $ sizeOf_ withdrawals <=. lit wdrlsize
         , reify delegatees delegators $ \ [var|credStakeSet|] ->
-            [ forAll' withdrawals $ \ [var|rewAccount|] [var|_wCoin|] ->
-                match rewAccount $ \ [var|network|] [var|rewcred|] ->
-                  [network ==. lit Testnet, member_ rewcred credStakeSet]
+            [ forAll' withdrawals $ \ [var|accountAddress|] [var|_wCoin|] ->
+                match accountAddress $ \ [var|network|] [var|accountCred|] ->
+                  [network ==. lit Testnet, member_ accountCred credStakeSet]
             ]
         ]
     ]

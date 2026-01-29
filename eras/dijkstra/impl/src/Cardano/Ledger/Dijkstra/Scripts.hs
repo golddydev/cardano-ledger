@@ -33,7 +33,6 @@ module Cardano.Ledger.Dijkstra.Scripts (
   upgradeTimelock,
 ) where
 
-import Cardano.Ledger.Address (RewardAccount)
 import Cardano.Ledger.Allegra.Scripts
 import Cardano.Ledger.Alonzo.Scripts (
   AlonzoEraScript (..),
@@ -95,7 +94,7 @@ data DijkstraPlutusPurpose f era
   = DijkstraSpending !(f Word32 TxIn)
   | DijkstraMinting !(f Word32 PolicyID)
   | DijkstraCertifying !(f Word32 (TxCert era))
-  | DijkstraRewarding !(f Word32 RewardAccount)
+  | DijkstraRewarding !(f Word32 AccountAddress)
   | DijkstraVoting !(f Word32 Voter)
   | DijkstraProposing !(f Word32 (ProposalProcedure era))
   | DijkstraGuarding !(f Word32 ScriptHash)

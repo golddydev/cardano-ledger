@@ -11,7 +11,7 @@ description:
 
 category: Network
 build-type: Simple
-data-files: cddl-files/allegra.cddl
+data-files: cddl/data/allegra.cddl
 extra-source-files: CHANGELOG.md
 
 source-repository head
@@ -69,6 +69,7 @@ library
     aeson,
     base >=4.18 && <5,
     bytestring,
+    cardano-data,
     cardano-ledger-binary >=1.4,
     cardano-ledger-core:{cardano-ledger-core, internal} >=1.19,
     cardano-ledger-shelley ^>=1.18,
@@ -104,7 +105,6 @@ library cddl
     base,
     cardano-ledger-allegra,
     cardano-ledger-shelley:cddl,
-    cuddle >=0.4,
     heredoc,
 
 executable generate-cddl
@@ -125,15 +125,13 @@ executable generate-cddl
     base,
     cardano-ledger-binary:testlib >=1.4,
     cddl,
-    directory,
-    filepath,
 
 library testlib
   exposed-modules:
     Test.Cardano.Ledger.Allegra.Arbitrary
     Test.Cardano.Ledger.Allegra.Binary.Annotator
     Test.Cardano.Ledger.Allegra.Binary.Cddl
-    Test.Cardano.Ledger.Allegra.CDDL
+    Test.Cardano.Ledger.Allegra.Binary.Golden
     Test.Cardano.Ledger.Allegra.Era
     Test.Cardano.Ledger.Allegra.Examples
     Test.Cardano.Ledger.Allegra.Imp
@@ -165,35 +163,11 @@ library testlib
     cardano-slotting,
     cardano-strict-containers,
     containers,
-    cuddle >=0.4,
     generic-random,
-    heredoc,
     microlens,
     small-steps,
     text,
     tree-diff,
-
-executable huddle-cddl
-  main-is: Main.hs
-  hs-source-dirs: huddle-cddl
-  other-modules: Paths_cardano_ledger_allegra
-  default-language: Haskell2010
-  ghc-options:
-    -Wall
-    -Wcompat
-    -Wincomplete-record-updates
-    -Wincomplete-uni-patterns
-    -Wredundant-constraints
-    -Wpartial-fields
-    -Wunused-packages
-    -threaded
-    -rtsopts
-    -with-rtsopts=-N
-
-  build-depends:
-    base,
-    cardano-ledger-binary:testlib >=1.3.4.0,
-    testlib,
 
 test-suite tests
   type: exitcode-stdio-1.0
@@ -219,6 +193,7 @@ test-suite tests
   build-depends:
     base,
     cardano-ledger-allegra,
+    cardano-ledger-allegra:cddl,
     cardano-ledger-binary:testlib,
     cardano-ledger-core:{cardano-ledger-core, testlib},
     cardano-ledger-shelley:testlib,
