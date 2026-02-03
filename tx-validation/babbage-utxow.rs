@@ -598,8 +598,9 @@ pub fn babbage_utxow_transition(
     // Step 4: Check exact redeemers (same as Alonzo)
     // (Simplified)
 
-    // Step 5-8: VKey, witnesses, MIR, metadata (same as previous eras)
-    // (Simplified)
+    // Step 5-8: VKey, witnesses, MIR, metadata (same as Shelley)
+    // Metadata: Shelley.validateMetadata pp tx (hash + when pv > (2,0) validMetadatum).
+    // See shelley-utxow.rs validate_metadata(tx, protocol_version).
 
     // Step 9: Validate script well-formedness (NEW in Babbage)
     validate_scripts_well_formed(&scripts_provided, witness_scripts)?;

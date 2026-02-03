@@ -797,8 +797,9 @@ pub fn conway_utxow_transition(
     // Step 7: MIR signatures - REMOVED in Conway!
     // No more genesis delegate checks (governance is on-chain now via CIP-1694)
 
-    // Step 8: Metadata validation
-    // (Simplified)
+    // Step 8: Metadata validation (REUSED from Shelley)
+    // Shelley.validateMetadata pp tx: hash consistency + when pv > (2,0) validMetadatum (InvalidMetadata).
+    // See shelley-utxow.rs validate_metadata(tx, protocol_version).
 
     // Step 9: Script well-formedness
     // (Simplified - same as Babbage)

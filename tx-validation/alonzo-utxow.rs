@@ -8,6 +8,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use minicbor::{data::Tag, Encoder};
+
 // ============================================================================
 // Re-export Shelley types (Alonzo builds on Shelley)
 // ============================================================================
@@ -548,35 +550,8 @@ fn blake2b_256(data: &[u8]) -> [u8; 32] {
     out
 }
 
-// --- CBOR encoding helpers (match Alonzo ledger encoding) ---
-
-fn cbor_encode_unsigned(n: u64, buf: &mut Vec<u8>) {
-    if n <= 23 {
-        buf.push(n as u8);
-    } else if n <= 0xff {
-        buf.push(0x18);
-        buf.push(n as u8);
-    } else if n <= 0xffff {
-        buf.push(0x19);
-        buf.extend_from_slice(&(n as u16).to_be_bytes());
-    } else if n <= 0xffff_ffff {
-        buf.push(0x1a);
-        buf.extend_from_slice(&(n as u32).to_be_bytes());
-    } else {
-        buf.push(0x1b);
-        buf.extend_from_slice(&n.to_be_bytes());
-    }
-}
-
-fn cbor_encode_byte_string(bytes: &[u8], buf: &mut Vec<u8>) {
-    if bytes.len() <= 23 {
-        buf.push(0x40 + bytes.len() as u8);
-    } else {
-        buf.push(0x58);
-        buf.push(bytes.len() as u8);
-    }
-    buf.extend_from_slice(bytes);
-}
+// --- CBOR encoding via minicbor (matches Alonzo ledger encoding, RFC 8949) ---
+// Requires: minicbor = { version = "0.21", features = ["alloc"] } in Cargo.toml.
 
 /// Encode redeemers as CBOR map (version >= 9 style): map of key -> [data, ex_units].
 /// Reference: TxWits.hs encCBOR RedeemersRaw (encCBOR rs for Map), keyValueEncoder.
@@ -588,20 +563,26 @@ fn encode_redeemers_cbor(redeemers: &HashMap<PlutusPurpose, Redeemer>) -> Vec<u8
     pairs.sort_by(|a, b| plutus_purpose_cmp(a.0, b.0));
 
     let mut buf = Vec::new();
-    if pairs.len() <= 23 {
-        buf.push(0xa0 + pairs.len() as u8);
-    } else {
-        buf.push(0xb8);
-        buf.push(pairs.len() as u8);
-    }
+    let mut enc = Encoder::new(&mut buf);
+    enc.map(pairs.len() as u64).expect("encode map");
     for (purpose, redeemer) in pairs {
-        encode_plutus_purpose_cbor(purpose, &mut buf);
-        // Value: list of [data, ex_units]. encCBOR dats <> encCBOR exs -> list len 2
-        buf.push(0x82);
-        cbor_encode_byte_string(&redeemer.data, &mut buf);
-        buf.push(0x82);
-        cbor_encode_unsigned(redeemer.ex_units.mem, &mut buf);
-        cbor_encode_unsigned(redeemer.ex_units.steps, &mut buf);
+        let (tag, index) = purpose_tag_index(purpose);
+        enc.array(2)
+            .expect("encode purpose array")
+            .u64(tag as u64)
+            .expect("encode tag")
+            .u64(index as u64)
+            .expect("encode index");
+        enc.array(2)
+            .expect("encode redeemer value array")
+            .bytes(&redeemer.data)
+            .expect("encode data")
+            .array(2)
+            .expect("encode ex_units array")
+            .u64(redeemer.ex_units.mem)
+            .expect("encode mem")
+            .u64(redeemer.ex_units.steps)
+            .expect("encode steps");
     }
     buf
 }
@@ -621,13 +602,6 @@ fn purpose_tag_index(p: &PlutusPurpose) -> (u8, u32) {
     }
 }
 
-fn encode_plutus_purpose_cbor(p: &PlutusPurpose, buf: &mut Vec<u8>) {
-    let (tag, index) = purpose_tag_index(p);
-    buf.push(0x82);
-    cbor_encode_unsigned(tag as u64, buf);
-    cbor_encode_unsigned(index as u64, buf);
-}
-
 /// Encode datums as CBOR tag 258 (set) then array of Data encodings (raw CBOR per datum).
 /// Reference: TxWits.hs encodeWithSetTag . Map.elems . unTxDatsRaw
 fn encode_datums_cbor(datums: &HashMap<DataHash, Datum>) -> Vec<u8> {
@@ -638,17 +612,11 @@ fn encode_datums_cbor(datums: &HashMap<DataHash, Datum>) -> Vec<u8> {
     elems.sort_by(|a, b| cbor_byte_string_short_lex_cmp(a, b));
 
     let mut buf = Vec::new();
-    buf.push(0xd9);
-    buf.push(0x01);
-    buf.push(0x02);
-    if elems.len() <= 23 {
-        buf.push(0x80 + elems.len() as u8);
-    } else {
-        buf.push(0x98);
-        buf.push(elems.len() as u8);
-    }
+    let mut enc = Encoder::new(&mut buf);
+    enc.tag(Tag::new(258)).expect("encode tag 258");
+    enc.array(elems.len() as u64).expect("encode array");
     for d in elems {
-        buf.extend_from_slice(d);
+        enc.writer_mut().write_all(d).expect("write datum CBOR");
     }
     buf
 }
@@ -670,15 +638,11 @@ fn encode_lang_views_cbor(lang_views: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
     views.sort_by(|a, b| short_lex_cmp(&a.0, &b.0));
 
     let mut buf = Vec::new();
-    if views.len() <= 23 {
-        buf.push(0xa0 + views.len() as u8);
-    } else {
-        buf.push(0xb8);
-        buf.push(views.len() as u8);
-    }
+    let mut enc = Encoder::new(&mut buf);
+    enc.map(views.len() as u64).expect("encode map");
     for (tag, params) in views {
-        cbor_encode_byte_string(tag, &mut buf);
-        cbor_encode_byte_string(params, &mut buf);
+        enc.bytes(tag).expect("encode tag");
+        enc.bytes(params).expect("encode params");
     }
     buf
 }
@@ -699,11 +663,11 @@ fn get_language_view(
 ) -> (Vec<u8>, Vec<u8>) {
     let tag = match lang {
         Language::PlutusV1 => {
-            let inner: u8 = 0;
-            let inner_encoded = vec![inner];
-            let mut outer = Vec::new();
-            cbor_encode_byte_string(&inner_encoded, &mut outer);
-            outer
+            let mut buf = Vec::new();
+            Encoder::new(&mut buf)
+                .bytes(&[0u8])
+                .expect("encode PlutusV1 tag");
+            buf
         }
         Language::PlutusV2 | Language::PlutusV3 => {
             let tag_byte: u8 = match lang {
@@ -711,22 +675,25 @@ fn get_language_view(
                 Language::PlutusV2 => 1,
                 Language::PlutusV3 => 2,
             };
-            let mut buf = Vec::new();
-            buf.push(tag_byte);
-            buf
+            vec![tag_byte]
         }
     };
     let params = match cost_models.get(&lang) {
         Some(params) => {
             let mut buf = Vec::new();
-            buf.push(0x9f);
+            let mut enc = Encoder::new(&mut buf);
+            enc.begin_array().expect("begin indefinite array");
             for &p in params {
-                cbor_encode_unsigned(p, &mut buf);
+                enc.u64(p).expect("encode cost param");
             }
-            buf.push(0xff);
+            enc.end().expect("end indefinite array");
             buf
         }
-        None => vec![0xf6],
+        None => {
+            let mut buf = Vec::new();
+            Encoder::new(&mut buf).null().expect("encode null");
+            buf
+        }
     };
     (tag, params)
 }
@@ -984,7 +951,9 @@ pub fn alonzo_utxow_transition(
     // (Simplified - would check genesis quorum for MIR certs)
 
     // Step 8: Metadata validation (REUSED from Shelley)
-    // (Simplified - would validate auxiliary data hash)
+    // Shelley.validateMetadata pp tx: hash consistency + when pv > (2,0) validMetadatum (InvalidMetadata).
+    // See shelley-utxow.rs validate_metadata(tx, protocol_version). This codebase does not model
+    // auxiliary_data in AlonzoTx; when integrating, call full metadata validation per Shelley.
 
     // Step 9: Script integrity hash (NEW in Alonzo)
     // runTest $ checkScriptIntegrityHash tx pp scriptIntegrity

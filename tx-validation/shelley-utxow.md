@@ -59,7 +59,7 @@ data ShelleyUtxowPredFailure era
 | `MissingTxBodyMetadataHash` | Auxiliary data provided but no hash in body |
 | `MissingTxMetadata` | Hash in body but no auxiliary data provided |
 | `ConflictingMetadataHash` | Auxiliary data hash doesn't match body hash |
-| `InvalidMetadata` | Auxiliary data fails validation (Shelley: never used) |
+| `InvalidMetadata` | Auxiliary data present and hash matches, but metadatum value-size validation failed (see below). In Shelley never raised: only enforced when protocol version > (2,0). |
 | `ExtraneousScriptWitnessesUTXOW` | Scripts provided but not needed |
 | `MIRInsufficientGenesisSigsUTXOW` | MIR certificate without enough genesis signatures |
 
@@ -248,29 +248,51 @@ validateMetadata ::
   PParams era -> Tx l era -> Test (ShelleyUtxowPredFailure era)
 validateMetadata pp tx =
   let txBody = tx ^. bodyTxL
-      auxDataHash = txBody ^. auxDataHashTxBodyL
-      auxData = tx ^. auxDataTxL
-   in case (auxDataHash, auxData) of
-        (SNothing, SNothing) -> pure ()  -- No metadata, no hash: OK
-        (SJust mdh, SNothing) -> failure (MissingTxMetadata mdh)
-        (SNothing, SJust md) -> failure (MissingTxBodyMetadataHash (hashTxAuxData md))
-        (SJust mdh, SJust md)
-          | hashTxAuxData md /= mdh ->
-              failure $ ConflictingMetadataHash Mismatch {mismatchSupplied = mdh, mismatchExpected = hashTxAuxData md}
-          | not (validateTxAuxData pp md) -> failure InvalidMetadata
-          | otherwise -> pure ()
+      pv = pp ^. ppProtocolVersionL
+   in case (txBody ^. auxDataHashTxBodyL, tx ^. auxDataTxL) of
+        (SNothing, SNothing) -> pure ()
+        (SJust mdh, SNothing) -> failure $ MissingTxMetadata mdh
+        (SNothing, SJust md') -> failure $ MissingTxBodyMetadataHash (hashTxAuxData md')
+        (SJust mdh, SJust md') ->
+          sequenceA_
+            [ failureUnless (hashTxAuxData md' == mdh) $
+                ConflictingMetadataHash $ Mismatch { ... }
+            , when (SoftForks.validMetadata pv) $
+                failureUnless (validateTxAuxData pv md') InvalidMetadata
+            ]
 ```
 
 **What it does**:
-1. Gets the auxiliary data hash from transaction body
+1. Gets the auxiliary data hash from transaction body and protocol version from `pp`
 2. Gets the actual auxiliary data from transaction
 3. Checks four cases:
    - Neither present: OK
-   - Hash but no data: Error
-   - Data but no hash: Error
-   - Both present: Check hash matches and data is valid
+   - Hash but no data: Error (`MissingTxMetadata`)
+   - Data but no hash: Error (`MissingTxBodyMetadataHash`)
+   - Both present: Check hash matches; then when `validMetadata pv` (pv > (2,0)), run `validateTxAuxData` (all `validMetadatum`) or fail with `InvalidMetadata`
 
-**Plain English**: "If you include metadata, you must commit to it with a hash. The hash must match."
+**Plain English**: "If you include metadata, you must commit to it with a hash. The hash must match. When protocol version is above (2,0), every metadatum value must respect size limits (bytestring/text ≤ 64 bytes)."
+
+**Rust implementation**: `shelley-utxow.rs` implements full metadata validation: `validate_metadata(tx, protocol_version)` performs hash consistency and, when `valid_metadata_soft_fork(protocol_version)` (pv > (2,0)), decodes each metadata value as CBOR Metadatum and runs `valid_metadatum` (bytestring/text ≤ 64 bytes, recursive for List/Map). `UtxoEnv` includes `protocol_version`; `Metadatum` enum and minimal CBOR decoder are in the same file.
+
+#### When `InvalidMetadata` occurs (Haskell reference)
+
+`InvalidMetadata` is raised only in the branch where **both** body auxiliary-data hash and auxiliary data are present **and** the hash matches. Then the node runs a **value-size** check on the metadata, but only when a soft fork is active:
+
+- **Utxow.hs:434-452** (`validateMetadata`): in the `(SJust mdh, SJust md')` case, after checking hash match it does:
+  ```haskell
+  when (SoftForks.validMetadata pv) $
+    failureUnless (validateTxAuxData pv md') InvalidMetadata
+  ```
+- **SoftForks.hs:12-15** (`validMetadata`): the check is enabled only when protocol version **> (2,0)**:
+  ```haskell
+  validMetadata pv = pv > ProtVer (natVersion @2) 0
+  ```
+  So in **Shelley** (pv = (2,0)) this condition is false and `InvalidMetadata` is never raised there.
+- **TxAuxData.hs:98** (`validateTxAuxData` for Shelley): `all validMetadatum m` over the metadata map.
+- **Metadata.hs:75-87** (`validMetadatum`): each metadatum must satisfy size limits—bytestrings and text ≤ 64 bytes (UTF-8), lists and maps recursively.
+
+So **when it occurs**: protocol version > (2,0) and at least one metadatum has a bytestring/text longer than 64 bytes (or a nested such value). **Shelley: never used** because Shelley uses protocol version (2,0).
 
 ---
 

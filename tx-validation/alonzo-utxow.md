@@ -131,7 +131,7 @@ alonzoStyleWitness = do
 | 5 | `validateVerifiedWits` | Shelley | Verify signatures |
 | 6 | `validateNeededWitnesses` | Shelley | Check required witnesses |
 | 7 | `validateMIRInsufficientGenesisSigs` | Shelley | MIR quorum |
-| 8 | `validateMetadata` | Shelley | Metadata hash |
+| 8 | `validateMetadata` | Shelley | Metadata: hash consistency + validMetadatum when pv > (2,0) (InvalidMetadata) |
 | 9 | `checkScriptIntegrityHash` | **Alonzo** | Script integrity |
 | 10 | UTXO rule | All | Structural validation |
 

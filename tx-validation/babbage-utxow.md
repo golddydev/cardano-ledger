@@ -157,7 +157,7 @@ babbageUtxowTransition = do
 | 5 | VKey verification | Same |
 | 6 | Required witnesses | Same |
 | 7 | MIR signatures | Same |
-| 8 | Metadata | Same |
+| 8 | Metadata (Shelley full: hash + validMetadatum when pv > (2,0)) | Same |
 | 9 | **Script well-formedness** | **New** |
 | 10 | Script integrity | Same |
 | 11 | UTXO rule | Same |

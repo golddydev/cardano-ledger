@@ -217,6 +217,326 @@ pub struct TxWits {
     pub script_wits: HashMap<ScriptHash, NativeScript>,
 }
 
+// ============================================================================
+// Metadatum and metadata validation
+// Reference: libs/cardano-ledger-core/src/Cardano/Ledger/Metadata.hs (validMetadatum);
+// eras/shelley/impl/src/Cardano/Ledger/Shelley/SoftForks.hs (validMetadata: pv > (2,0))
+// ============================================================================
+
+/// Metadatum: recursive metadata value (CBOR structure).
+/// Reference: Metadata.hs:49-56
+#[derive(Debug, Clone)]
+pub enum Metadatum {
+    Map(Vec<(Metadatum, Metadatum)>),
+    List(Vec<Metadatum>),
+    I(i128),
+    B(Vec<u8>),
+    S(String),
+}
+
+/// Max length for bytestring and text metadatum values (bytes).
+/// Reference: Metadata.hs:78-79
+const METADATUM_MAX_BYTES: usize = 64;
+
+/// validMetadatum: I ok; B len <= 64; S UTF-8 len <= 64; List/Map recursive.
+/// Reference: Metadata.hs:75-87
+pub fn valid_metadatum(m: &Metadatum) -> bool {
+    match m {
+        Metadatum::I(_) => true,
+        Metadatum::B(b) => b.len() <= METADATUM_MAX_BYTES,
+        Metadatum::S(s) => s.as_bytes().len() <= METADATUM_MAX_BYTES,
+        Metadatum::List(xs) => xs.iter().all(valid_metadatum),
+        Metadatum::Map(kvs) => kvs
+            .iter()
+            .all(|(k, v)| valid_metadatum(k) && valid_metadatum(v)),
+    }
+}
+
+/// Minimal CBOR decoder for Metadatum. Returns (Metadatum, bytes consumed) or None on error.
+/// Reference: CBOR major types 0=int, 2=bytes, 3=text, 4=array, 5=map.
+fn decode_metadatum_cbor(data: &[u8]) -> Option<(Metadatum, usize)> {
+    if data.is_empty() {
+        return None;
+    }
+    let b0 = data[0];
+    let major = b0 >> 5;
+    let ai = b0 & 0x1F;
+    let mut pos = 1u32;
+    let mut len_u64 = 0u64;
+
+    match major {
+        0 => {
+            // Unsigned integer
+            let n = if ai <= 23 {
+                ai as u64
+            } else if ai == 24 {
+                if data.len() < 2 {
+                    return None;
+                }
+                pos += 1;
+                data[1] as u64
+            } else if ai == 25 {
+                if data.len() < 3 {
+                    return None;
+                }
+                pos += 2;
+                u64::from_be_bytes([data[1], data[2], 0, 0, 0, 0, 0, 0]) >> 48
+            } else if ai == 26 {
+                if data.len() < 5 {
+                    return None;
+                }
+                pos += 4;
+                u64::from_be_bytes([
+                    0, 0, 0, 0, data[1], data[2], data[3], data[4],
+                ])
+            } else if ai == 27 {
+                if data.len() < 9 {
+                    return None;
+                }
+                pos += 8;
+                u64::from_be_bytes([
+                    data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+                ])
+            } else {
+                return None;
+            };
+            return Some((Metadatum::I(n as i128), pos as usize));
+        }
+        1 => {
+            // Negative integer: -1 - n
+            let len_u64: u64 = if ai <= 23 {
+                ai as u64
+            } else if ai == 24 {
+                if data.len() < 2 {
+                    return None;
+                }
+                pos += 1;
+                data[1] as u64
+            } else if ai == 25 {
+                if data.len() < 3 {
+                    return None;
+                }
+                pos += 2;
+                u64::from_be_bytes([data[1], data[2], 0, 0, 0, 0, 0, 0]) >> 48
+            } else if ai == 26 {
+                if data.len() < 5 {
+                    return None;
+                }
+                pos += 4;
+                u64::from_be_bytes([0, 0, 0, 0, data[1], data[2], data[3], data[4]])
+            } else if ai == 27 {
+                if data.len() < 9 {
+                    return None;
+                }
+                pos += 8;
+                u64::from_be_bytes([
+                    data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+                ])
+            } else {
+                return None;
+            };
+            return Some((Metadatum::I(-1i128 - (len_u64 as i128)), pos as usize));
+        }
+        2 => {
+            // Byte string
+            let len_u64: u64 = if ai <= 23 {
+                ai as u64
+            } else if ai == 24 {
+                if data.len() < 2 {
+                    return None;
+                }
+                pos += 1;
+                data[1] as u64
+            } else if ai == 25 {
+                if data.len() < 3 {
+                    return None;
+                }
+                pos += 2;
+                u64::from_be_bytes([data[1], data[2], 0, 0, 0, 0, 0, 0]) >> 48
+            } else if ai == 26 {
+                if data.len() < 5 {
+                    return None;
+                }
+                pos += 4;
+                u64::from_be_bytes([0, 0, 0, 0, data[1], data[2], data[3], data[4]])
+            } else if ai == 27 {
+                if data.len() < 9 {
+                    return None;
+                }
+                pos += 8;
+                u64::from_be_bytes([
+                    data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+                ])
+            } else {
+                return None;
+            };
+            let len = len_u64 as usize;
+            if data.len() < pos as usize + len {
+                return None;
+            }
+            let bytes = data[pos as usize..pos as usize + len].to_vec();
+            return Some((Metadatum::B(bytes), pos as usize + len));
+        }
+        3 => {
+            // Text string
+            if ai <= 23 {
+                len_u64 = ai as u64;
+            } else if ai == 24 {
+                if data.len() < 2 {
+                    return None;
+                }
+                pos += 1;
+                len_u64 = data[1] as u64;
+            } else if ai == 25 {
+                if data.len() < 3 {
+                    return None;
+                }
+                pos += 2;
+                len_u64 = u64::from_be_bytes([data[1], data[2], 0, 0, 0, 0, 0, 0]) >> 48;
+            } else if ai == 26 {
+                if data.len() < 5 {
+                    return None;
+                }
+                pos += 4;
+                len_u64 = u64::from_be_bytes([0, 0, 0, 0, data[1], data[2], data[3], data[4]]);
+            } else if ai == 27 {
+                if data.len() < 9 {
+                    return None;
+                }
+                pos += 8;
+                len_u64 = u64::from_be_bytes([
+                    data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+                ]);
+            } else {
+                return None;
+            };
+            let len = len_u64 as usize;
+            if data.len() < pos as usize + len {
+                return None;
+            }
+            let raw = &data[pos as usize..pos as usize + len];
+            let s = String::from_utf8(raw.to_vec()).ok()?;
+            return Some((Metadatum::S(s), pos as usize + len));
+        }
+        4 => {
+            // Array
+            if ai <= 23 {
+                len_u64 = ai as u64;
+            } else if ai == 24 {
+                if data.len() < 2 {
+                    return None;
+                }
+                pos += 1;
+                len_u64 = data[1] as u64;
+            } else if ai == 25 {
+                if data.len() < 3 {
+                    return None;
+                }
+                pos += 2;
+                len_u64 = u64::from_be_bytes([data[1], data[2], 0, 0, 0, 0, 0, 0]) >> 48;
+            } else if ai == 26 {
+                if data.len() < 5 {
+                    return None;
+                }
+                pos += 4;
+                len_u64 = u64::from_be_bytes([0, 0, 0, 0, data[1], data[2], data[3], data[4]]);
+            } else if ai == 27 {
+                if data.len() < 9 {
+                    return None;
+                }
+                pos += 8;
+                len_u64 = u64::from_be_bytes([
+                    data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+                ]);
+            } else {
+                return None;
+            };
+            let mut arr = Vec::with_capacity(len_u64 as usize);
+            let mut p = pos as usize;
+            for _ in 0..len_u64 {
+                let (elem, n) = decode_metadatum_cbor(&data[p..])?;
+                arr.push(elem);
+                p += n;
+            }
+            return Some((Metadatum::List(arr), p));
+        }
+        5 => {
+            // Map
+            let len_u64: u64 = if ai <= 23 {
+                ai as u64
+            } else if ai == 24 {
+                if data.len() < 2 {
+                    return None;
+                }
+                pos += 1;
+                data[1] as u64
+            } else if ai == 25 {
+                if data.len() < 3 {
+                    return None;
+                }
+                pos += 2;
+                u64::from_be_bytes([data[1], data[2], 0, 0, 0, 0, 0, 0]) >> 48
+            } else if ai == 26 {
+                if data.len() < 5 {
+                    return None;
+                }
+                pos += 4;
+                u64::from_be_bytes([0, 0, 0, 0, data[1], data[2], data[3], data[4]])
+            } else if ai == 27 {
+                if data.len() < 9 {
+                    return None;
+                }
+                pos += 8;
+                u64::from_be_bytes([
+                    data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+                ])
+            } else {
+                return None;
+            };
+            let mut kvs = Vec::with_capacity(len_u64 as usize);
+            let mut p = pos as usize;
+            for _ in 0..len_u64 {
+                let (k, nk) = decode_metadatum_cbor(&data[p..])?;
+                p += nk;
+                let (v, nv) = decode_metadatum_cbor(&data[p..])?;
+                p += nv;
+                kvs.push((k, v));
+            }
+            return Some((Metadatum::Map(kvs), p));
+        }
+        _ => {}
+    }
+    None
+}
+
+/// validateTxAuxData (metadata part): all metadatums pass validMetadatum.
+/// Reference: TxAuxData.hs:98 (Shelley); Alonzo/TxAuxData.hs:301 (all validMetadatum metadata)
+fn validate_tx_aux_data_metadata(metadata: &HashMap<u64, Vec<u8>>) -> bool {
+    for value in metadata.values() {
+        if let Some((m, _)) = decode_metadatum_cbor(value) {
+            if !valid_metadatum(&m) {
+                return false;
+            }
+        } else {
+            return false; // Invalid CBOR for a metadatum
+        }
+    }
+    true
+}
+
+/// Protocol version (major, minor). Used for soft fork validMetadata (pv > (2,0)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProtocolVersion {
+    pub major: u32,
+    pub minor: u32,
+}
+
+/// validMetadata: metadata value-size check is enabled only when pv > (2,0).
+/// Reference: SoftForks.hs:12-15
+pub fn valid_metadata_soft_fork(pv: ProtocolVersion) -> bool {
+    pv.major > 2 || (pv.major == 2 && pv.minor > 0)
+}
+
 /// Auxiliary data (metadata)
 #[derive(Debug, Clone)]
 pub struct AuxiliaryData {
@@ -305,8 +625,14 @@ pub enum ShelleyUtxowPredFailure {
     /// Reference: Utxow.hs:102
     ConflictingMetadataHash { expected: MetadataHash, actual: MetadataHash },
 
-    /// Invalid auxiliary data (Shelley: never used)
-    /// Reference: Utxow.hs:103
+    /// Invalid auxiliary data: metadatum value-size validation failed.
+    /// Raised only when (1) body hash and auxiliary data are both present, (2) hash matches,
+    /// (3) protocol version > (2,0) (soft fork), and (4) some metadatum violates size limits
+    /// (bytestring or text length > 64 bytes, or nested structure containing such).
+    /// In Shelley era protocol version is (2,0), so this check is never enabled there.
+    /// Reference: Utxow.hs:131-132 (constructor), Utxow.hs:451-452 (when raised);
+    /// validateTxAuxData in TxAuxData.hs:98; validMetadatum in Metadata.hs:75-87;
+    /// SoftForks.validMetadata in SoftForks.hs:12-15 (pv > (2,0)).
     InvalidMetadata,
 
     /// Scripts provided but not needed
@@ -561,11 +887,18 @@ pub fn validate_needed_witnesses(
     }
 }
 
-/// Validate metadata
-/// Reference: Utxow.hs:234-261 (validateMetadata)
+/// Validate metadata (full: hash consistency + metadatum value-size when pv > (2,0)).
+/// Reference: Utxow.hs:436-452 (validateMetadata)
 ///
-/// Checks metadata hash consistency.
-pub fn validate_metadata(tx: &Tx) -> Result<(), ShelleyUtxowPredFailure> {
+/// 1. No hash, no data: OK.
+/// 2. Hash but no data: MissingTxMetadata.
+/// 3. Data but no hash: MissingTxBodyMetadataHash.
+/// 4. Both present: hash must match; if protocol_version > (2,0), all metadatums must pass
+///    validMetadatum (bytestring/text ≤ 64 bytes, recursive for List/Map) or InvalidMetadata.
+pub fn validate_metadata(
+    tx: &Tx,
+    protocol_version: ProtocolVersion,
+) -> Result<(), ShelleyUtxowPredFailure> {
     match (&tx.body.auxiliary_data_hash, &tx.auxiliary_data) {
         // No hash, no data: OK
         (None, None) => Ok(()),
@@ -578,17 +911,21 @@ pub fn validate_metadata(tx: &Tx) -> Result<(), ShelleyUtxowPredFailure> {
             aux_data.hash(),
         )),
 
-        // Both present: Check match
+        // Both present: Check hash match, then (when soft fork active) metadatum sizes
         (Some(body_hash), Some(aux_data)) => {
             let computed_hash = aux_data.hash();
-            if *body_hash == computed_hash {
-                Ok(())
-            } else {
-                Err(ShelleyUtxowPredFailure::ConflictingMetadataHash {
+            if *body_hash != computed_hash {
+                return Err(ShelleyUtxowPredFailure::ConflictingMetadataHash {
                     expected: *body_hash,
                     actual: computed_hash,
-                })
+                });
             }
+            if valid_metadata_soft_fork(protocol_version)
+                && !validate_tx_aux_data_metadata(&aux_data.metadata)
+            {
+                return Err(ShelleyUtxowPredFailure::InvalidMetadata);
+            }
+            Ok(())
         }
     }
 }
@@ -633,9 +970,12 @@ pub fn validate_mir_insufficient_genesis_sigs(
 // ============================================================================
 
 /// UTXOW environment
+/// Reference: Utxow.hs (UtxoEnv: slot, pp, certState); pp includes protocol version
 pub struct UtxoEnv {
     pub slot: SlotNo,
     pub quorum: u64,
+    /// Protocol version (major, minor). Used for metadata soft fork: pv > (2,0) enables metadatum value-size check.
+    pub protocol_version: ProtocolVersion,
 }
 
 /// Shelley UTXOW validation
@@ -675,8 +1015,8 @@ pub fn shelley_utxow_transition(
     validate_needed_witnesses(&wits_key_hashes, cert_state, utxo, &tx.body)?;
 
     // Step 5: Validate metadata (line 323)
-    // (adh = ◇ ∧ ad = ◇) ∨ (adh = hashAD ad)
-    validate_metadata(tx)?;
+    // (adh = ◇ ∧ ad = ◇) ∨ (adh = hashAD ad); when pv > (2,0) also validateTxAuxData (validMetadatum)
+    validate_metadata(tx, env.protocol_version)?;
 
     // Step 6: Check MIR genesis signatures (line 328)
     // { c ∈ txcerts txb ∩ TxCert_mir } ≠ ∅ ⇒ |genSig| ≥ Quorum
@@ -812,5 +1152,68 @@ mod tests {
             result,
             Err(ShelleyUtxowPredFailure::ExtraneousScriptWitnessesUTXOW(_))
         ));
+    }
+
+    #[test]
+    fn test_validate_metadata_invalid_metadatum_when_pv_gt_2_0() {
+        // When pv > (2,0), metadatum with bytestring > 64 bytes must fail with InvalidMetadata.
+        // CBOR for bytes length 65: 0x58 (major 2, ai 24) + 0x41 (65) + 65 bytes
+        let mut long_bytes = vec![0x58, 65];
+        long_bytes.extend(std::iter::repeat(0u8).take(65));
+        let mut metadata = HashMap::new();
+        metadata.insert(1u64, long_bytes);
+        let aux_data = AuxiliaryData { metadata };
+        let hash = aux_data.hash();
+        let tx = Tx {
+            body: TxBody {
+                inputs: vec![],
+                outputs: vec![],
+                fee: 0,
+                certificates: vec![],
+                withdrawals: HashMap::new(),
+                auxiliary_data_hash: Some(hash),
+            },
+            wits: TxWits {
+                vkey_wits: vec![],
+                script_wits: HashMap::new(),
+            },
+            auxiliary_data: Some(aux_data),
+        };
+        let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
+        let result = validate_metadata(&tx, pv_3_0);
+        assert!(
+            matches!(result, Err(ShelleyUtxowPredFailure::InvalidMetadata)),
+            "expected InvalidMetadata when pv > (2,0) and metadatum bytestring len > 64, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_metadata_valid_metadatum_when_pv_gt_2_0() {
+        // When pv > (2,0), metadatum with bytestring <= 64 bytes must pass.
+        // CBOR for bytes length 2: 0x42 + two bytes
+        let metadata = HashMap::from([(1u64, vec![0x42, 0x01, 0x02])]);
+        let aux_data = AuxiliaryData { metadata };
+        let hash = aux_data.hash();
+        let tx = Tx {
+            body: TxBody {
+                inputs: HashSet::new(),
+                outputs: vec![],
+                fee: 0,
+                ttl: None,
+                certificates: vec![],
+                withdrawals: HashMap::new(),
+                update: None,
+                auxiliary_data_hash: Some(hash),
+            },
+            wits: TxWits {
+                vkey_wits: vec![],
+                script_wits: HashMap::new(),
+            },
+            auxiliary_data: Some(aux_data),
+        };
+        let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
+        let result = validate_metadata(&tx, pv_3_0);
+        assert!(result.is_ok(), "expected OK for valid metadatum, got {:?}", result);
     }
 }
