@@ -18,6 +18,8 @@
 module Test.Cardano.Ledger.Core.Arbitrary (
   module Test.Cardano.Ledger.Binary.Arbitrary,
   genericShrinkMemo,
+  mkSnapShotFromStakePoolParams,
+  resetStakePoolSnapShotFromPoolParams,
 
   -- * Plutus
   genValidAndUnknownCostModels,
@@ -40,7 +42,6 @@ import Cardano.Ledger.BaseTypes (
   BlocksMade (..),
   CertIx (..),
   DnsName,
-  EpochInterval (..),
   Exclusive (..),
   HasZero,
   Inclusive (..),
@@ -64,7 +65,7 @@ import Cardano.Ledger.BaseTypes (
  )
 import qualified Cardano.Ledger.BaseTypes as BaseTypes
 import Cardano.Ledger.Binary (EncCBOR, Sized, mkSized)
-import Cardano.Ledger.Coin (Coin (..), CompactForm (..), DeltaCoin (..), knownNonZeroCoin)
+import Cardano.Ledger.Coin (Coin (..), CompactForm (..), DeltaCoin (..))
 import Cardano.Ledger.Core
 import Cardano.Ledger.Credential (Credential (..), Ptr (..), SlotNo32 (..), StakeReference (..))
 import Cardano.Ledger.Genesis (NoGenesis (..))
@@ -87,10 +88,10 @@ import Cardano.Ledger.Plutus.Language (Language (..), nonNativeLanguages)
 import Cardano.Ledger.Rewards (Reward (..), RewardType (..))
 import Cardano.Ledger.State
 import Cardano.Ledger.TxIn (TxId (..), TxIn (..))
-import Control.DeepSeq
 import Control.Monad (replicateM)
 import Control.Monad.Identity (Identity)
 import Control.Monad.Trans.Fail.String (errorFail)
+import Data.Foldable (toList)
 import Data.GenValidity
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
@@ -101,6 +102,7 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Typeable
 import qualified Data.VMap as VMap
+import qualified Data.Vector as V
 import Data.Word (Word16, Word64, Word8)
 import GHC.Generics (Generic (..))
 import GHC.Stack
@@ -108,9 +110,15 @@ import Generic.Random (genericArbitraryU)
 import Numeric.Natural (Natural)
 import qualified PlutusLedgerApi.V1 as PV1
 import System.Random.Stateful (StatefulGen, uniformRM)
+import Test.Cardano.Base.Bytes (genByteString, genShortByteString)
 import qualified Test.Cardano.Chain.Common.Gen as Byron
 import Test.Cardano.Ledger.Binary.Arbitrary
 import Test.Cardano.Ledger.Core.Utils (unsafeBoundRational)
+import Test.Cardano.Slotting.Arbitrary ()
+import Test.Cardano.StrictContainers.Instances ()
+import Test.Crypto.Hash ()
+import Test.Crypto.KES ()
+import Test.Crypto.VRF ()
 import Test.QuickCheck
 import Test.QuickCheck.Arbitrary (GSubterms, RecursivelyShrink)
 import Test.QuickCheck.Hedgehog (hedgehog)
@@ -261,9 +269,6 @@ instance Arbitrary Nonce where
       , mkNonceFromNumber <$> arbitrary
       ]
 
-instance Arbitrary EpochInterval where
-  arbitrary = EpochInterval <$> arbitrary
-
 ------------------------------------------------------------------------------------------
 -- Cardano.Ledger.TxIn -------------------------------------------------------------------
 ------------------------------------------------------------------------------------------
@@ -295,7 +300,7 @@ instance Arbitrary (Credential r) where
 ------------------------------------------------------------------------------------------
 
 genHash :: forall h a. HashAlgorithm h => Gen (Hash h a)
-genHash = UnsafeHash <$> genShortByteString (fromIntegral (sizeHash (Proxy @h)))
+genHash = UnsafeHash <$> genShortByteString (fromIntegral (hashSize (Proxy @h)))
 
 instance Arbitrary (SafeHash i) where
   arbitrary = unsafeMakeSafeHash <$> genHash
@@ -674,37 +679,61 @@ instance Arbitrary StakePoolSnapShot where
 
 instance Arbitrary SnapShot where
   arbitrary = do
-    ssStake@(Stake stake) <- arbitrary
-    let ssTotalActiveStake = sumAllStake ssStake `BaseTypes.nonZeroOr` (knownNonZeroCoin @1)
-    ssPoolParams <- arbitrary
-    ssDelegations <-
-      if VMap.null ssPoolParams
+    poolParams <- arbitrary
+    credsWithStakeAndDelegations <-
+      if V.null poolParams
         then pure mempty
-        else fmap VMap.fromList $ listOf $ do
-          cred <-
-            if VMap.null stake
-              then arbitrary
-              else
-                let pickFromStake = do
-                      ix <- chooseInt (0, VMap.size stake - 1)
-                      pure $ fst $ VMap.elemAt ix stake
-                 in frequency [(1, arbitrary), (20, pickFromStake)]
-          ix <- chooseInt (0, VMap.size ssPoolParams - 1)
-          pure (cred, fst $ VMap.elemAt ix ssPoolParams)
-    deposit <- arbitrary
-    let delegationsPerStakePool :: Map (KeyHash StakePool) (Set (Credential Staking))
-        delegationsPerStakePool =
-          VMap.foldlWithKey
-            ( \acc cred stakePool ->
-                Map.insertWith (<>) stakePool (Set.singleton cred) acc
-            )
-            mempty
-            ssDelegations
-        stakePoolSnapShotFromParams poolId =
-          mkStakePoolSnapShot ssStake ssTotalActiveStake
-            . mkStakePoolState deposit (Map.findWithDefault mempty poolId delegationsPerStakePool)
-        ssStakePoolsSnapShot = force $ VMap.mapWithKey stakePoolSnapShotFromParams ssPoolParams
-    pure SnapShot {..}
+        else do
+          len <- sized $ \n -> chooseInt (0, n)
+          fmap Map.fromList $ vectorOf len $ do
+            cred <- arbitrary
+            !deleg <- do
+              ix <- chooseInt (0, V.length poolParams - 1)
+              pure $ sppId $ poolParams V.! ix
+            -- Make sure that the total sum does not overflow.
+            stake <-
+              BaseTypes.unsafeNonZero . CompactCoin
+                <$> choose (1, maxBound @Word64 `div` fromIntegral @Int @Word64 len)
+            pure (cred, StakeWithDelegation stake deleg)
+    let
+      activeStake = ActiveStake $ VMap.fromMap credsWithStakeAndDelegations
+    pure $
+      mkSnapShotFromStakePoolParams activeStake poolParams
+
+-- | Adaptor that can construct new SnapShot representation from the old one
+mkSnapShotFromStakePoolParams ::
+  Foldable f =>
+  ActiveStake ->
+  f StakePoolParams ->
+  SnapShot
+mkSnapShotFromStakePoolParams activeStake poolParams =
+  resetStakePoolSnapShotFromPoolParams poolParams $
+    mkSnapShot activeStake VMap.empty
+
+-- | Given a snapshot and stake pool params fully override the stake pools snapshot.
+resetStakePoolSnapShotFromPoolParams ::
+  Foldable f =>
+  f StakePoolParams ->
+  SnapShot ->
+  SnapShot
+resetStakePoolSnapShotFromPoolParams stakePools ss@SnapShot {..} =
+  ss
+    { ssStakePoolsSnapShot =
+        VMap.fromList
+          [ (sppId pp, snapShotFromStakePoolParams pp)
+          | pp <- toList stakePools
+          ]
+    }
+  where
+    snapShotFromStakePoolParams stakePoolParams =
+      let delegations = Map.findWithDefault mempty (sppId stakePoolParams) delegatorsPerStakePool
+       in mkStakePoolSnapShot ssActiveStake ssTotalActiveStake $
+            mkStakePoolState mempty delegations stakePoolParams
+    delegatorsPerStakePool =
+      VMap.foldlWithKey
+        (\acc cred swd -> Map.insertWith (<>) (swdDelegation swd) (Set.singleton cred) acc)
+        mempty
+        (unActiveStake ssActiveStake)
 
 instance Arbitrary SnapShots where
   arbitrary = do
@@ -735,6 +764,12 @@ instance Arbitrary Stake where
         let pair = (,) <$> arbitrary <*> (CompactCoin <$> genWord64 n)
         list <- frequency [(1, pure []), (99, vectorOf n pair)]
         pure (Map.fromList list)
+
+instance Arbitrary StakeWithDelegation where
+  arbitrary = StakeWithDelegation <$> arbitrary <*> arbitrary
+
+instance Arbitrary ActiveStake where
+  arbitrary = ActiveStake <$> arbitrary
 
 ------------------------------------------------------------------------------------------
 -- Cardano.Ledger.Core.TxCert ----------------------------------------------------------

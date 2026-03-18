@@ -1,7 +1,14 @@
 # Version history for `cardano-ledger-api`
 
+## 1.13.0.1
+
+*
+
 ## 1.13.0.0
 
+* Add `queryStakeSnapshots` and the types produced by it:
+  - `StakeSnapshot`
+  - `StakeSnapshots`
 * Re-export `DirectDeposits` and `directDepositsTxBodyL` from `Cardano.Ledger.Api.Tx.Body`.
 * Re-export `constitutionGuardrailsScriptHashL` from `Cardano.Ledger.Api.Governance`.
 * Changed the type of the following functions by adding `Network` argument:

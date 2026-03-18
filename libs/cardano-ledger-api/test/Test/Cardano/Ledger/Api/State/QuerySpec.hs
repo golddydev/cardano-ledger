@@ -10,17 +10,9 @@
 module Test.Cardano.Ledger.Api.State.QuerySpec (spec) where
 
 import Cardano.Ledger.Api.Era
-import Cardano.Ledger.Api.State.Query (
-  CommitteeMemberState (..),
-  CommitteeMembersState (..),
-  HotCredAuthStatus (..),
-  MemberStatus (..),
-  NextEpochChange (..),
-  QueryPoolStateResult,
-  getNextEpochCommitteeMembers,
-  queryCommitteeMembersState,
- )
+import Cardano.Ledger.Api.State.Query
 import Cardano.Ledger.BaseTypes
+import Cardano.Ledger.Coin
 import Cardano.Ledger.Conway.Governance (
   Committee (..),
   ConwayEraGov (..),
@@ -45,28 +37,39 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import Data.Set (Set)
 import qualified Data.Set as Set
+import qualified Data.VMap as VMap
 import Lens.Micro ((&), (.~), (^.))
 import Test.Cardano.Ledger.Api.Arbitrary ()
+import Test.Cardano.Ledger.Binary.Random
 import Test.Cardano.Ledger.Common
 import Test.Cardano.Ledger.Conway.Arbitrary ()
+import Test.Cardano.Ledger.Core.Arbitrary
 import Test.Cardano.Ledger.Core.Binary.RoundTrip (roundTripEraExpectation)
 import Test.Cardano.Ledger.Shelley.Arbitrary ()
 import Test.Cardano.Slotting.Numeric ()
 
 spec :: Spec
 spec = do
-  describe "API Types" $ do
-    describe "Roundtrip" $ do
-      prop "Shelley" $ roundTripEraExpectation @ShelleyEra @QueryPoolStateResult
-      prop "Allegra" $ roundTripEraExpectation @AllegraEra @QueryPoolStateResult
-      prop "Mary" $ roundTripEraExpectation @MaryEra @QueryPoolStateResult
-      prop "Alonzo" $ roundTripEraExpectation @AlonzoEra @QueryPoolStateResult
-      prop "Babbage" $ roundTripEraExpectation @BabbageEra @QueryPoolStateResult
-      prop "Conway" $ roundTripEraExpectation @ConwayEra @QueryPoolStateResult
-      prop "Dijkstra" $ roundTripEraExpectation @DijkstraEra @QueryPoolStateResult
-  describe "GetCommitteeMembersState" $ do
-    committeeMembersStateSpec @ConwayEra
-    committeeMembersStateSpec @DijkstraEra
+  latestErasSpec @ConwayEra
+  latestErasSpec @DijkstraEra
+
+latestErasSpec ::
+  forall era.
+  ( ConwayEraGov era
+  , Default (StashedAVVMAddresses era)
+  , GovState era ~ ConwayGovState era
+  , ConwayEraCertState era
+  ) =>
+  Spec
+latestErasSpec =
+  describe "QuerySpec" $ do
+    describe (eraName @era) $ do
+      describe "Roundtrip" $ do
+        prop "QueryPoolStateResult" $ roundTripEraExpectation @era @QueryPoolStateResult
+        prop "StakeSnapshots" $ roundTripEraExpectation @era @StakeSnapshots
+      describe "Queries" $ do
+        committeeMembersStateSpec @era
+        queryStakeSnapshotsSpec @era
 
 committeeMembersStateSpec ::
   forall era.
@@ -77,7 +80,7 @@ committeeMembersStateSpec ::
   ) =>
   Spec
 committeeMembersStateSpec =
-  prop "CommitteeMembersState Query" $ \statusFilter -> do
+  prop "GetCommitteeMembersState" $ \statusFilter -> do
     forAll genCommittee $ \committee ->
       -- half of the committee members in the next epoch will overlap with the current ones
       forAll (genNextCommittee @era committee) $ \nextCommittee ->
@@ -449,3 +452,51 @@ queryCommitteeMembersStateNoFilters =
     Set.empty
     Set.empty
     Set.empty
+
+queryStakeSnapshotsSpec ::
+  forall era.
+  ( EraCertState era
+  , EraGov era
+  , EraStake era
+  , Default (StashedAVVMAddresses era)
+  ) =>
+  Spec
+queryStakeSnapshotsSpec =
+  describe "GetStakeSnapshots" $ do
+    prop "ssStakeSnapshots has all poolIds" $ \ss -> do
+      let
+        nes = (def :: NewEpochState era) & nesEsL . esSnapshotsL .~ ss
+        result = queryStakeSnapshots nes Nothing
+        getPoolIdsWithNonZeroDelegators =
+          Map.filter ((> 0) . spssNumDelegators) . VMap.toMap . ssStakePoolsSnapShot
+        getPoolIdsWithNonZeroStake =
+          Map.filter ((> mempty) . spssStake) . VMap.toMap . ssStakePoolsSnapShot
+        allPoolIdsFiltered with =
+          foldMap
+            (Map.keysSet . with)
+            [ssStakeMark ss, ssStakeSet ss, ssStakeGo ss]
+        version = pvMajor (nes ^. nesEsL . curPParamsEpochStateL . ppProtocolVersionL)
+        allPoolIds
+          | version >= natVersion @11 = allPoolIdsFiltered getPoolIdsWithNonZeroStake
+          | otherwise = allPoolIdsFiltered getPoolIdsWithNonZeroDelegators
+        nonZeroTotal = ssTotalActiveStake
+        nonZeroSubTotal ssWhich =
+          nonZeroOr (foldMap ssWhich (ssStakeSnapshots result)) (knownNonZeroCoin @1)
+      subPoolIds <- uniformSubSet Nothing allPoolIds QC
+      -- Tricky bit about the query is when all pool ids are requested then ones that do not have
+      -- delegations are filtered out, while when poolIds are specified, then they are retained even
+      -- if they don't have any delegations
+      let
+        subResult = queryStakeSnapshots nes (Just subPoolIds)
+      pure @Gen $
+        conjoin
+          [ counterexample "AllPoolIds" $
+              Map.keysSet (ssStakeSnapshots result) === allPoolIds
+          , counterexample "SubTotal Mark" $ nonZeroSubTotal ssMarkPool === ssMarkTotal result
+          , counterexample "SubTotal Set" $ nonZeroSubTotal ssSetPool === ssSetTotal result
+          , counterexample "SubTotal Go" $ nonZeroSubTotal ssGoPool === ssGoTotal result
+          , counterexample "Total Mark" $ ssMarkTotal result === nonZeroTotal (ssStakeMark ss)
+          , counterexample "Total Set" $ ssSetTotal result === nonZeroTotal (ssStakeSet ss)
+          , counterexample "Total Go" $ ssGoTotal result === nonZeroTotal (ssStakeGo ss)
+          , counterexample "subPoolIds" $ Map.keysSet (ssStakeSnapshots subResult) === subPoolIds
+          ]

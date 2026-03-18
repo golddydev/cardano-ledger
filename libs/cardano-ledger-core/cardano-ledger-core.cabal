@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: cardano-ledger-core
-version: 1.19.0.0
+version: 1.20.0.0
 license: Apache-2.0
 maintainer: operations@iohk.io
 author: IOHK
@@ -30,9 +30,19 @@ common warnings
     -Wcompat
     -Wincomplete-record-updates
     -Wincomplete-uni-patterns
-    -Wredundant-constraints
     -Wpartial-fields
     -Wunused-packages
+
+  -- ghc-9.14 gives redundant constraint warnings on some constraints
+  -- that are needed for earlier compilers.
+  if impl(ghc <9.14)
+    ghc-options:
+      -Wredundant-constraints
+
+  -- In ghc-9.14 the `pattern` namespace specifier is deprecated.
+  if impl(ghc >=9.14)
+    ghc-options:
+      -Wno-pattern-namespace-specifier
 
 common rtsopts
   ghc-options:
@@ -107,12 +117,12 @@ library
     base64-bytestring,
     binary,
     bytestring >=0.10 && <0.11.3 || >=0.11.4,
-    cardano-base >=0.1.1.0,
+    cardano-base >=0.1.2,
     cardano-crypto,
-    cardano-crypto-class ^>=2.2,
+    cardano-crypto-class ^>=2.3,
     cardano-crypto-wrapper,
     cardano-data >=1.3,
-    cardano-ledger-binary ^>=1.8,
+    cardano-ledger-binary ^>=1.9,
     cardano-ledger-byron,
     cardano-ledger-core:internal,
     cardano-slotting,
@@ -121,7 +131,6 @@ library
     data-default >=0.8,
     deepseq,
     groups,
-    iproute,
     measures,
     mempack >=0.2,
     microlens,
@@ -183,10 +192,16 @@ library cddl
     -Wunused-packages
 
   build-depends:
+    QuickCheck,
     base,
+    bytestring,
+    cardano-ledger-binary,
     cardano-ledger-core,
-    cuddle >=1.1,
+    cborg,
+    cuddle >=1.2,
     heredoc,
+    mempack,
+    random,
     text,
 
 library testlib
@@ -224,13 +239,16 @@ library testlib
     base16-bytestring,
     binary,
     bytestring,
-    cardano-crypto-class,
+    cardano-base:testlib,
+    cardano-crypto-class:{cardano-crypto-class, testlib},
+    cardano-crypto-praos:testlib,
     cardano-crypto-wrapper:{cardano-crypto-wrapper, testlib},
     cardano-data:testlib,
     cardano-ledger-binary:{cardano-ledger-binary, testlib} >=1.5,
     cardano-ledger-byron:{cardano-ledger-byron, testlib},
     cardano-ledger-core,
-    cardano-slotting,
+    cardano-slotting:{cardano-slotting, testlib},
+    cardano-strict-containers:testlib,
     containers,
     deepseq,
     generic-random,
@@ -249,6 +267,7 @@ library testlib
     time,
     tree-diff,
     unliftio,
+    vector,
     vector-map:{vector-map, testlib},
 
 library tasty-compat

@@ -36,6 +36,7 @@ module Data.VMap (
   toList,
   toAscList,
   keys,
+  keysSet,
   elems,
   fromAscList,
   fromAscListN,
@@ -57,6 +58,7 @@ import Control.DeepSeq
 import Data.Aeson (FromJSON (..), FromJSONKey, ToJSON (..), ToJSONKey)
 import qualified Data.Map.Strict as Map
 import Data.Maybe as Maybe hiding (mapMaybe)
+import qualified Data.Set as Set
 import Data.VMap.KVVector (KVVector (..))
 import qualified Data.VMap.KVVector as KV
 import qualified Data.Vector as V
@@ -234,10 +236,14 @@ map ::
   (a -> b) ->
   VMap kv vv k a ->
   VMap kv vv k b
-map f (VMap vec) = VMap (VG.map (\(k, v) -> (k, f v)) vec)
+map f (VMap vec) = VMap (VG.map (\(k, v) -> let v' = f v in v' `seq` (k, v')) vec)
 -- TODO: benchmark and switch to this implementation when we switch to Data.Vector.Strict
 -- VMap (KV.mapValsKVVector f vec)
-{-# INLINE map #-}
+--
+-- This is marked as NOINLINE because there is some strange issue in `vector`, likely due to stream
+-- fusion, that prevents elements from being forced. This needs further investigation, but for now
+-- we can get away with NOINLINE. FTR. `Data.Vector.Strict` is also susceptible to this problem.
+{-# NOINLINE map #-}
 
 mapMaybe ::
   (VG.Vector kv k, VG.Vector vv a, VG.Vector vv b) =>
@@ -303,6 +309,10 @@ fold = VG.foldMap' id . valsVector . unVMap
 keys :: VG.Vector kv k => VMap kv vv k v -> [k]
 keys = VG.toList . keysVector . unVMap
 {-# INLINE keys #-}
+
+keysSet :: VG.Vector kv k => VMap kv vv k v -> Set.Set k
+keysSet = Set.fromDistinctAscList . VG.toList . keysVector . unVMap
+{-# INLINE keysSet #-}
 
 elems :: VG.Vector vv v => VMap kv vv k v -> [v]
 elems = VG.toList . valsVector . unVMap

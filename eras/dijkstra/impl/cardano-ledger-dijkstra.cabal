@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: cardano-ledger-dijkstra
-version: 0.2.0.0
+version: 0.3.0.0
 license: Apache-2.0
 maintainer: operations@iohk.io
 author: IOHK
@@ -69,7 +69,6 @@ library
     Cardano.Ledger.Dijkstra.Rules.SubLedgers
     Cardano.Ledger.Dijkstra.Rules.SubPool
     Cardano.Ledger.Dijkstra.Rules.SubUtxo
-    Cardano.Ledger.Dijkstra.Rules.SubUtxos
     Cardano.Ledger.Dijkstra.Rules.SubUtxow
     Cardano.Ledger.Dijkstra.Rules.Utxo
     Cardano.Ledger.Dijkstra.Rules.Utxos
@@ -87,9 +86,18 @@ library
     -Wincomplete-record-updates
     -Wincomplete-uni-patterns
     -Wpartial-fields
-    -Wredundant-constraints
     -Wunused-packages
 
+  -- ghc-9.14 gives redundant constraint warnings on some constraints
+  -- that are needed for earlier compilers.
+  if impl(ghc <9.14)
+    ghc-options:
+      -Wredundant-constraints
+
+  -- In ghc-9.14 the `pattern` namespace specifier is deprecated.
+  if impl(ghc >=9.14)
+    ghc-options:
+      -Wno-pattern-namespace-specifier
   build-depends:
     FailT,
     aeson,
@@ -100,7 +108,7 @@ library
     cardano-ledger-allegra,
     cardano-ledger-alonzo ^>=1.15,
     cardano-ledger-babbage,
-    cardano-ledger-binary ^>=1.8,
+    cardano-ledger-binary ^>=1.9,
     cardano-ledger-conway,
     cardano-ledger-core:{cardano-ledger-core, internal} >=1.19,
     cardano-ledger-mary,
@@ -147,9 +155,18 @@ library testlib
     -Wincomplete-record-updates
     -Wincomplete-uni-patterns
     -Wpartial-fields
-    -Wredundant-constraints
     -Wunused-packages
 
+  -- ghc-9.14 gives redundant constraint warnings on some constraints
+  -- that are needed for earlier compilers.
+  if impl(ghc <9.14)
+    ghc-options:
+      -Wredundant-constraints
+
+  -- In ghc-9.14 the `pattern` namespace specifier is deprecated.
+  if impl(ghc >=9.14)
+    ghc-options:
+      -Wno-pattern-namespace-specifier
   build-depends:
     base,
     bytestring,

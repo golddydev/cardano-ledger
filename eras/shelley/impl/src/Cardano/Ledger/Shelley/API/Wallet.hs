@@ -42,7 +42,6 @@ module Cardano.Ledger.Shelley.API.Wallet (
 import Cardano.Ledger.Address (compactAddr)
 import Cardano.Ledger.BaseTypes (
   Globals (..),
-  Network,
   NonNegativeInterval,
   UnitInterval,
   epochInfoPure,
@@ -191,8 +190,7 @@ poolsByTotalStakeFraction ::
 poolsByTotalStakeFraction globals nes =
   PoolDistr poolsByTotalStake totalActiveStake
   where
-    network = networkId globals
-    snap = currentSnapshot nes network
+    snap = currentSnapshot nes
     Coin totalStake = getTotalStake globals nes
     stakeRatio = unCoin (unNonZero totalActiveStake) %? totalStake
     PoolDistr poolsByActiveStake totalActiveStake = calculatePoolDistr snap
@@ -230,13 +228,14 @@ getNonMyopicMemberRewards globals ss = Map.fromSet nmmRewards
     totalStakeCoin@(Coin totalStake) = circulation es maxSupply
     toShare (Coin x) = StakeShare $ x %? totalStake
     memShare (Right cred) =
-      toShare $ maybe mempty fromCompact $ VMap.lookup cred (EB.unStake stake)
+      toShare $
+        maybe mempty (fromCompact . unNonZero . EB.swdStake) $
+          VMap.lookup cred (EB.unActiveStake activeStake)
     memShare (Left coin) = toShare coin
     es = nesEs ss
     pp = es ^. curPParamsEpochStateL
     NonMyopic {likelihoodsNM = ls, rewardPotNM = rPot} = esNonMyopic es
-    network = networkId globals
-    EB.SnapShot stake _ _ _ stakePoolsSnapShot = currentSnapshot ss network
+    EB.SnapShot activeStake _ stakePoolsSnapShot = currentSnapshot ss
     calcNMMRewards t poolId spss
       | spssPledge <= spssSelfDelegatedOwnersStake =
           calcNonMyopicMemberReward pp rPot poolId spssCost spssMargin s sigma t topPools hitRateEst
@@ -259,7 +258,7 @@ getNonMyopicMemberRewards globals ss = Map.fromSet nmmRewards
 -- When ranking pools, and reporting their saturation level, in the wallet, we
 -- do not want to use one of the regular snapshots, but rather the most recent
 -- ledger state.
-currentSnapshot :: (EraStake era, EraCertState era) => NewEpochState era -> Network -> EB.SnapShot
+currentSnapshot :: (EraStake era, EraCertState era) => NewEpochState era -> EB.SnapShot
 currentSnapshot nes =
   snapShotFromInstantStake instantStake dstate pstate
   where
@@ -340,9 +339,8 @@ getRewardInfoPools globals nes =
       , rewardPotNM = rPot
       } = esNonMyopic es
     histLookup poolId = VMap.findWithDefault mempty poolId ls
-    network = networkId globals
 
-    EB.SnapShot {ssStakePoolsSnapShot} = currentSnapshot nes network
+    EB.SnapShot {ssStakePoolsSnapShot} = currentSnapshot nes
 
     rewardParams =
       RewardParams

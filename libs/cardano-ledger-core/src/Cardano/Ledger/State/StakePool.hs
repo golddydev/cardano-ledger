@@ -32,7 +32,7 @@ module Cardano.Ledger.State.StakePool (
   spsPledgeL,
   spsCostL,
   spsMarginL,
-  spsAccountAddressL,
+  spsAccountIdL,
   spsOwnersL,
   spsRelaysL,
   spsMetadataL,
@@ -69,7 +69,8 @@ module Cardano.Ledger.State.StakePool (
   sppVrfL,
 ) where
 
-import Cardano.Ledger.Address (AccountAddress (..), AccountId (..), accountAddressCredentialL)
+import Cardano.Base.IP (IPv4, IPv6)
+import Cardano.Ledger.Address (AccountAddress (..), AccountId (..))
 import Cardano.Ledger.BaseTypes (
   DnsName,
   Network,
@@ -118,7 +119,6 @@ import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Short as SBS
 import Data.Default (Default (..))
 import Data.Foldable (asum)
-import Data.IP (IPv4, IPv6)
 import Data.MemPack.Buffer (byteArrayFromShortByteString, byteArrayToShortByteString)
 import Data.Sequence.Strict (StrictSeq)
 import Data.Set (Set)
@@ -141,7 +141,7 @@ data StakePoolState = StakePoolState
   -- ^ Fixed operational cost per epoch
   , spsMargin :: !UnitInterval
   -- ^ Pool profit margin (variable fee percentage)
-  , spsAccountAddress :: !(Credential Staking)
+  , spsAccountId :: !AccountId
   -- ^ Account address credential for pool rewards
   , spsOwners :: !(Set (KeyHash Staking))
   -- ^ Set of stake key hashes that own this pool
@@ -168,8 +168,8 @@ spsCostL = lens spsCost $ \sps c -> sps {spsCost = c}
 spsMarginL :: Lens' StakePoolState UnitInterval
 spsMarginL = lens spsMargin $ \sps m -> sps {spsMargin = m}
 
-spsAccountAddressL :: Lens' StakePoolState (Credential Staking)
-spsAccountAddressL = lens spsAccountAddress $ \sps sc -> sps {spsAccountAddress = sc}
+spsAccountIdL :: Lens' StakePoolState AccountId
+spsAccountIdL = lens spsAccountId $ \sps sc -> sps {spsAccountId = sc}
 
 spsOwnersL :: Lens' StakePoolState (Set (KeyHash Staking))
 spsOwnersL = lens spsOwners $ \sps s -> sps {spsOwners = s}
@@ -194,7 +194,7 @@ instance EncCBOR StakePoolState where
         !> To (spsPledge sps)
         !> To (spsCost sps)
         !> To (spsMargin sps)
-        !> To (spsAccountAddress sps)
+        !> To (spsAccountId sps)
         !> To (spsOwners sps)
         !> To (spsRelays sps)
         !> To (spsMetadata sps)
@@ -239,7 +239,7 @@ instance Default StakePoolState where
       , spsPledge = Coin 0
       , spsCost = Coin 0
       , spsMargin = def
-      , spsAccountAddress = def
+      , spsAccountId = AccountId def
       , spsOwners = def
       , spsRelays = def
       , spsMetadata = def
@@ -258,7 +258,7 @@ mkStakePoolState deposit delegators spp =
     , spsPledge = sppPledge spp
     , spsCost = sppCost spp
     , spsMargin = sppMargin spp
-    , spsAccountAddress = sppAccountAddress spp ^. accountAddressCredentialL
+    , spsAccountId = aaId (sppAccountAddress spp)
     , spsOwners = sppOwners spp
     , spsRelays = sppRelays spp
     , spsMetadata = sppMetadata spp
@@ -269,15 +269,19 @@ mkStakePoolState deposit delegators spp =
 -- | Convert 'StakePoolState' back to 'StakePoolParams' by providing the pool ID.
 -- This is useful when you need to reconstruct the full parameters from
 -- the state representation.
-stakePoolStateToStakePoolParams :: KeyHash StakePool -> Network -> StakePoolState -> StakePoolParams
-stakePoolStateToStakePoolParams poolId networkId sps =
+stakePoolStateToStakePoolParams :: Network -> KeyHash StakePool -> StakePoolState -> StakePoolParams
+stakePoolStateToStakePoolParams networkId poolId sps =
   StakePoolParams
     { sppId = poolId
     , sppVrf = spsVrf sps
     , sppPledge = spsPledge sps
     , sppCost = spsCost sps
     , sppMargin = spsMargin sps
-    , sppAccountAddress = AccountAddress networkId $ AccountId $ spsAccountAddress sps
+    , sppAccountAddress =
+        AccountAddress
+          { aaNetworkId = networkId
+          , aaId = spsAccountId sps
+          }
     , sppOwners = spsOwners sps
     , sppRelays = spsRelays sps
     , sppMetadata = spsMetadata sps

@@ -1,7 +1,14 @@
 # Revision history for cardano-ledger-dijkstra
 
+## 0.3.0.0
+
+* Add `SubLedgerEnv` and `SubUtxowEnv`
+* Remove `OutputTooSmallUTxO` constructor from `DijkstraUtxoPredFailure`
+* Remove `SubOutputTooSmallUTxO` constructor from `DijkstraSubUtxoPredFailure`
+
 ## 0.2.0.0
 
+* Expose `conwayToDijkstraUtxowPredFailure`
 * Add `accountBalanceIntervalsTxBodyL` lens to `DijkstraEraTxBody` typeclass.
   - Add the corresponding field to both `TopTx` and `SubTx` levels of `TxBody`.
   - Add `AccountBalanceInterval` and `AccountBalanceIntervals` data types.
@@ -18,7 +25,6 @@
   - `DijkstraSubGovEvent`
   - `DijkstraSubUtxowEvent`
   - `DijkstraSubUtxoEvent`
-  - `DijkstraSubUtxosEvent`
 * Add `DijkstraLedgerEvent`
 * Add `DirectDeposits` to transaction bodies at both (top and sub) levels.
   - Add `directDepositsTxBodyL` lens to the `DijkstraEraTxBody` typeclass.
@@ -32,7 +38,6 @@
   - `DijkstraSUBLEDGER`
   - `DijkstraSUBLEDGERS`
   - `DijkstraSUBPOOL`
-  - `DijkstraSUBUTXOS`
   - `DijkstraSUBUTXOW`
   - `DijkstraSUBUTXO`
     and `STS` instances for them
@@ -46,7 +51,6 @@
   - `DijkstraSubLedgersPredFailure`
   - `DijkstraSubPoolPredFailure`
   - `DijkstraSubUtxoPredFailure`
-  - `DijkstraSubUtxosPredFailure`
   - `DijkstraSubUtxowPredFailure`
 * Add `DijkstraSubLedgersFailure` to `DijkstraLedgerPredFailure`
 * Add `SubCertsEnv`

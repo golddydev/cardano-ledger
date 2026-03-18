@@ -1,7 +1,21 @@
 # Version history for `cardano-ledger-binary`
 
+## 1.9.0.0
+
+* Change `decodeIPv4`, `decodeIPv6`, `encodeIPv4`, `encodeIPv6`, `ipv4ToBytes`, `ipv6ToBytes` to work on `Cardano.Base.IP.IPv4/IPv6`
+* Remove default implementation for `DecCBOR` class
+
+### `testlib`
+
+* Replace `CuddleData` with `CTreeRoot MonoReferenced`
+* Remove `numExamples` argument from `specWithHuddle`
+* Add `huddleAntiCborSpec`
+* Remove `Arbitrary` and `ToExpr` instances for `IPv4` and `IPv6` (now in `cardano-base:testlib`)
+* Remove `Arbitrary` and `ToExpr` instances for `IPv4` and `IPv6` (now in `cardano-base:testlib`)
+
 ## 1.8.0.0
 
+* Add `Uniform`, `UniformRange` instances and fix `Random` instance
 * Change `Version` from `Word64` to `Word32`
   - Add `mkVersion32` and `getVersion32`
 * Remove `listLenBound` from `EncCBORGroup`
@@ -18,6 +32,15 @@
 
 ### `testlib`
 
+* Remove `Arbitrary` instances for `BlockNo`, `EpochInterval`, `EpochSize`, `SystemStart`, `WithOrigin`.
+  These have been moved to `cardano-slotting:testlib`.
+* Remove `genByteArray`, `genByteString`, `genLazyByteString`, `genShortByteString`.
+  These have been moved to `cardano-base:testlib`.
+* Remove `Arbitrary` instances for `CertifiedVRF`, `SigDSIGN`, `SignKeyDSIGN`, `SignedDSIGN`, `VerKeyDSIGN`.
+  These have been moved to `cardano-crypto-class:testlib`.
+* Remove `Arbitrary` instances for `StrictSeq`, `StrictMaybe`.
+  These have been moved to `cardano-strict-containers:testlib`.
+* Add `huddleRoundTripGenValidate`
 * Remove `Test.Cardano.Ledger.Binary.Cddl`
 * Add `ToExpr` instances to `DeserialiseFailure` and `DecoderError`
 * Remove `assertExprEqualWithMessage`

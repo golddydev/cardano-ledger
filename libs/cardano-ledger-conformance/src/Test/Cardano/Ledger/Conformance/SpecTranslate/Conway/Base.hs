@@ -31,7 +31,7 @@ import Cardano.Ledger.Allegra.Scripts (
  )
 import Cardano.Ledger.Alonzo (AlonzoTxAuxData, MaryValue)
 import Cardano.Ledger.Alonzo.PParams (OrdExUnits (OrdExUnits))
-import Cardano.Ledger.Alonzo.Scripts (AlonzoPlutusPurpose (..))
+import Cardano.Ledger.Alonzo.Scripts (AlonzoPlutusPurpose (..), plutusScriptLanguage)
 import Cardano.Ledger.Alonzo.TxWits (AlonzoTxWits (..), Redeemers (..), TxDats (..), unTxDats)
 import Cardano.Ledger.Babbage.TxOut (BabbageTxOut (..))
 import Cardano.Ledger.BaseTypes
@@ -121,6 +121,7 @@ instance
     Agda.MkHSPlutusScript
       <$> toSpecRep (hashScript $ PlutusScript ps)
       <*> pure (fromIntegral $ originalBytesSize ps)
+      <*> toSpecRep (plutusScriptLanguage ps)
 
 instance
   ( AlonzoEraScript era
@@ -230,7 +231,7 @@ instance
       ppPv = (0, 0)
       ppMinUTxOValue = 0 -- minUTxOValue has been deprecated and is not supported in Conway
     ppCoinsPerUTxOByte <- toSpecRep cppCoinsPerUTxOByte
-    ppCostmdls <- toSpecRep cppCostModels
+    ppCostmdlsAssoc <- toSpecRep cppCostModels
     ppPrices <- toSpecRep cppPrices
     let
       pp = PParams cpp
@@ -635,7 +636,7 @@ instance
       <*> dreps
       <*> toSpecRep reCommitteeState
       <*> toSpecRep treasury
-      <*> toSpecRep (Map.mapWithKey (`stakePoolStateToStakePoolParams` Testnet) reStakePools)
+      <*> toSpecRep (Map.mapWithKey (stakePoolStateToStakePoolParams Testnet) reStakePools)
       <*> toSpecRep (Map.mapMaybe (^. dRepDelegationAccountStateL) (reAccounts ^. accountsMapL))
 
 instance

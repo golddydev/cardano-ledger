@@ -1,5 +1,13 @@
 # Version history for `cardano-protocol-tpraos`
 
+## 1.6.0.0
+
+*
+
+### `testlib`
+
+* Replace `CuddleData` with `CTreeRoot MonoReferenced`
+
 ## 1.5.0.0
 
 * Remove deprecated function `bHeaderSize`

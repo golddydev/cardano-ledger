@@ -1,7 +1,18 @@
 # Version history for `cardano-ledger-conway`
 
+## 1.22.0.0
+
+* Remove `ToCBOR` and `FromCBOR` instances for `DefaultVote`
+
 ## 1.21.0.0
 
+* Add `validateTreasuryValue`, `validateWithdrawalsDelegated`
+* Update `resolveConwayInstantStake` to return `ActiveStake`
+* Remove `asBoundedIntegralHKD`
+* Change lens type of `hkdCommitteeMinSizeL` and `ppCommitteeMinSize` from `Natural` to `Word16`
+* Add `HeaderProtVerTooHigh` predicate failure.
+* Change `STS` instance of `ConwayUTOXS`: use `PParams` as `Environment`
+* Remove `TotalDeposits` and `TxUTxODiff` data constructors from `ConwayUtxosEvent`
 * Add `Generic` instance for `ApplyTxError`
 * Change `ScriptsNotPaidUTxO` to use `NonEmptyMap TxIn (TxOut era)` instead of `UTxO era`
 * Add `conwayLedgerTransitionTRC`

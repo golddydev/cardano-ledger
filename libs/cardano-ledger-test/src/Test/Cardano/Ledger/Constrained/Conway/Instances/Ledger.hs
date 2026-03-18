@@ -13,7 +13,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PartialTypeSignatures #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -148,9 +147,9 @@ import Data.VMap qualified as VMap
 import Data.Word
 import GHC.Generics (Generic)
 import PlutusLedgerApi.V1 qualified as PV1
+import Test.Cardano.Base.Bytes (genByteArray, genShortByteString)
 import Test.Cardano.Ledger.Allegra.Arbitrary ()
 import Test.Cardano.Ledger.Alonzo.Arbitrary ()
-import Test.Cardano.Ledger.Binary.Arbitrary (genByteArray, genShortByteString)
 import Test.Cardano.Ledger.Constrained.Conway.Instances.Basic
 import Test.Cardano.Ledger.Constrained.Conway.Instances.PParams ()
 import Test.Cardano.Ledger.Conway.Arbitrary ()
@@ -413,6 +412,13 @@ instance
   , HasSpec (SimpleRep a)
   ) =>
   HasSpec (CompactForm a)
+
+instance HasSimpleRep (NonZero (CompactForm Coin)) where
+  type SimpleRep (NonZero (CompactForm Coin)) = CompactForm Coin
+  toSimpleRep = unNonZero
+  fromSimpleRep = unsafeNonZero
+
+instance HasSpec (NonZero (CompactForm Coin))
 
 instance MaybeBounded (CompactForm Coin) where
   lowerBound = Just (CompactCoin 0)
@@ -1430,6 +1436,14 @@ instance HasSimpleRep Stake
 
 instance HasSpec Stake
 
+instance HasSimpleRep StakeWithDelegation
+
+instance HasSpec StakeWithDelegation
+
+instance HasSimpleRep ActiveStake
+
+instance HasSpec ActiveStake
+
 instance (Typeable k, Typeable v, VMap.Vector vk k, VMap.Vector vv v) => HasSimpleRep (VMap vk vv k v) where
   type SimpleRep (VMap vk vv k v) = Map k v
   toSimpleRep = VMap.toMap
@@ -1900,7 +1914,7 @@ instance HasSpec RewardUpdate
 type PulserTypes =
   '[ Int
    , FreeVars
-   , VMap VMap.VB VMap.VP (Credential Staking) (CompactForm Coin)
+   , VMap VMap.VB VMap.VB (Credential Staking) StakeWithDelegation
    , RewardAns
    ]
 

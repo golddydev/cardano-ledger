@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: cardano-ledger-conway
-version: 1.21.0.0
+version: 1.22.0.0
 license: Apache-2.0
 maintainer: operations@iohk.io
 author: IOHK
@@ -88,9 +88,18 @@ library
     -Wincomplete-record-updates
     -Wincomplete-uni-patterns
     -Wpartial-fields
-    -Wredundant-constraints
     -Wunused-packages
 
+  -- ghc-9.14 gives redundant constraint warnings on some constraints
+  -- that are needed for earlier compilers.
+  if impl(ghc <9.14)
+    ghc-options:
+      -Wredundant-constraints
+
+  -- In ghc-9.14 the `pattern` namespace specifier is deprecated.
+  if impl(ghc >=9.14)
+    ghc-options:
+      -Wno-pattern-namespace-specifier
   build-depends:
     aeson >=2.2,
     base >=4.18 && <5,
@@ -99,8 +108,8 @@ library
     cardano-ledger-allegra ^>=1.9,
     cardano-ledger-alonzo ^>=1.15,
     cardano-ledger-babbage ^>=1.13,
-    cardano-ledger-binary ^>=1.8,
-    cardano-ledger-core:{cardano-ledger-core, internal} ^>=1.19,
+    cardano-ledger-binary ^>=1.9,
+    cardano-ledger-core:{cardano-ledger-core, internal} ^>=1.20,
     cardano-ledger-mary ^>=1.10,
     cardano-ledger-shelley ^>=1.18,
     cardano-slotting,
@@ -212,9 +221,18 @@ library testlib
     -Wincomplete-record-updates
     -Wincomplete-uni-patterns
     -Wpartial-fields
-    -Wredundant-constraints
     -Wunused-packages
 
+  -- ghc-9.14 gives redundant constraint warnings on some constraints
+  -- that are needed for earlier compilers.
+  if impl(ghc <9.14)
+    ghc-options:
+      -Wredundant-constraints
+
+  -- In ghc-9.14 the `pattern` namespace specifier is deprecated.
+  if impl(ghc >=9.14)
+    ghc-options:
+      -Wno-pattern-namespace-specifier
   build-depends:
     FailT,
     ImpSpec,

@@ -20,6 +20,9 @@ module Cardano.Ledger.Dijkstra.Rules.SubLedgers (
 ) where
 
 import Cardano.Ledger.Alonzo.Plutus.Context (EraPlutusContext)
+import Cardano.Ledger.Alonzo.Rules (AlonzoUtxowPredFailure)
+import Cardano.Ledger.Alonzo.UTxO (AlonzoEraUTxO, AlonzoScriptsNeeded)
+import Cardano.Ledger.Babbage.Rules (BabbageUtxowPredFailure)
 import Cardano.Ledger.BaseTypes (
   ShelleyBase,
  )
@@ -34,6 +37,7 @@ import Cardano.Ledger.Conway.Rules (
   ConwayGovCertPredFailure,
   ConwayGovEvent,
   ConwayGovPredFailure,
+  ConwayLedgerPredFailure,
  )
 import Cardano.Ledger.Conway.State
 import Cardano.Ledger.Dijkstra.Era (
@@ -47,17 +51,23 @@ import Cardano.Ledger.Dijkstra.Era (
   DijkstraSUBLEDGERS,
   DijkstraSUBPOOL,
   DijkstraSUBUTXO,
-  DijkstraSUBUTXOS,
   DijkstraSUBUTXOW,
  )
 import Cardano.Ledger.Dijkstra.Rules.SubDeleg (DijkstraSubDelegPredFailure)
 import Cardano.Ledger.Dijkstra.Rules.SubGov (DijkstraSubGovEvent, DijkstraSubGovPredFailure (..))
 import Cardano.Ledger.Dijkstra.Rules.SubGovCert (DijkstraSubGovCertPredFailure)
-import Cardano.Ledger.Dijkstra.Rules.SubLedger (DijkstraSubLedgerPredFailure (..))
+import Cardano.Ledger.Dijkstra.Rules.SubLedger (
+  DijkstraSubLedgerPredFailure (..),
+  SubLedgerEnv (..),
+ )
 import Cardano.Ledger.Dijkstra.Rules.SubPool (DijkstraSubPoolEvent, DijkstraSubPoolPredFailure (..))
 import Cardano.Ledger.Dijkstra.TxCert
 import Cardano.Ledger.Shelley.LedgerState
-import Cardano.Ledger.Shelley.Rules (LedgerEnv, PoolEvent, ShelleyPoolPredFailure)
+import Cardano.Ledger.Shelley.Rules (
+  PoolEvent,
+  ShelleyPoolPredFailure,
+  ShelleyUtxowPredFailure,
+ )
 import Cardano.Ledger.TxIn (TxId)
 import Control.DeepSeq (NFData)
 import Control.Monad (foldM)
@@ -133,7 +143,7 @@ instance
   where
   type State (DijkstraSUBLEDGERS era) = LedgerState era
   type Signal (DijkstraSUBLEDGERS era) = OMap TxId (Tx SubTx era)
-  type Environment (DijkstraSUBLEDGERS era) = LedgerEnv era
+  type Environment (DijkstraSUBLEDGERS era) = SubLedgerEnv era
   type BaseM (DijkstraSUBLEDGERS era) = ShelleyBase
   type PredicateFailure (DijkstraSUBLEDGERS era) = DijkstraSubLedgersPredFailure era
   type Event (DijkstraSUBLEDGERS era) = DijkstraSubLedgersEvent era
@@ -157,7 +167,8 @@ dijkstraSubLedgersTransition = do
     subTxs
 
 instance
-  ( EraTx era
+  ( AlonzoEraTx era
+  , AlonzoEraUTxO era
   , ConwayEraTxBody era
   , ConwayEraGov era
   , ConwayEraCertState era
@@ -167,7 +178,6 @@ instance
   , EraRule "SUBLEDGER" era ~ DijkstraSUBLEDGER era
   , EraRule "SUBGOV" era ~ DijkstraSUBGOV era
   , EraRule "SUBUTXO" era ~ DijkstraSUBUTXO era
-  , EraRule "SUBUTXOS" era ~ DijkstraSUBUTXOS era
   , EraRule "SUBUTXOW" era ~ DijkstraSUBUTXOW era
   , EraRule "SUBCERTS" era ~ DijkstraSUBCERTS era
   , EraRule "SUBCERT" era ~ DijkstraSUBCERT era
@@ -186,7 +196,12 @@ instance
   , InjectRuleEvent "SUBGOV" ConwayGovEvent era
   , InjectRuleFailure "SUBGOV" DijkstraSubGovPredFailure era
   , InjectRuleFailure "SUBGOV" ConwayGovPredFailure era
+  , InjectRuleFailure "SUBLEDGER" ConwayLedgerPredFailure era
+  , InjectRuleFailure "SUBUTXOW" AlonzoUtxowPredFailure era
+  , InjectRuleFailure "SUBUTXOW" ShelleyUtxowPredFailure era
+  , InjectRuleFailure "SUBUTXOW" BabbageUtxowPredFailure era
   , TxCert era ~ DijkstraTxCert era
+  , ScriptsNeeded era ~ AlonzoScriptsNeeded era
   ) =>
   Embed (DijkstraSUBLEDGER era) (DijkstraSUBLEDGERS era)
   where

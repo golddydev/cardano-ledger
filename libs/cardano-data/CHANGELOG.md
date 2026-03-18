@@ -1,10 +1,16 @@
 # Version history for `cardano-data`
 
+## 1.3.0.1
+
+*
+
 ## 1.3.0.0
 
 * Add `Data.Map.NonEmpty`
 * Add `Data.Set.NonEmpty`
 * Add `lookupInternMap`
+* Add `Data.MapExtras.boundedEnumMap`
+* Add `Data.MapExtras.lookupMapFail`
 * Replace `okeyL` with `toOKey`
 
 ## 1.2.4.1

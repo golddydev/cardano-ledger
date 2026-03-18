@@ -25,6 +25,8 @@ import Cardano.Ledger.BaseTypes (
   Nonce,
   StrictMaybe (..),
   mkCertIxPartial,
+  unNonZero,
+  unsafeNonZero,
   (⭒),
  )
 import Cardano.Ledger.Block (Block (blockHeader))
@@ -87,6 +89,7 @@ import qualified Data.Set as Set
 import qualified Data.VMap as VMap
 import GHC.Exts (fromList)
 import GHC.Stack (HasCallStack)
+import Test.Cardano.Ledger.Core.Arbitrary (mkSnapShotFromStakePoolParams)
 import Test.Cardano.Ledger.Core.KeyPair (mkWitnessesVKey)
 import Test.Cardano.Ledger.Shelley.ConcreteCryptoTypes (MockCrypto)
 import qualified Test.Cardano.Ledger.Shelley.Examples.Cast as Cast
@@ -111,7 +114,6 @@ import Test.Cardano.Ledger.Shelley.Generator.Core (
  )
 import Test.Cardano.Ledger.Shelley.Generator.EraGen (genesisId)
 import Test.Cardano.Ledger.Shelley.Generator.ShelleyEraGen ()
-import Test.Cardano.Ledger.Shelley.Rewards (mkSnapShot)
 import Test.Cardano.Ledger.Shelley.Rules.Chain (ChainState (..))
 import Test.Cardano.Ledger.Shelley.Utils (
   epochSize,
@@ -388,19 +390,17 @@ blockEx3 =
 
 snapEx3 :: SnapShot
 snapEx3 =
-  let
-    stake =
-      mkStake
-        [ (Cast.aliceSHK, aliceCoinEx2Base <> aliceCoinEx2Ptr)
-        , (Cast.bobSHK, bobInitCoin)
-        ]
-    delegations =
-      [ (Cast.aliceSHK, aikColdKeyHash Cast.alicePoolKeys)
-      , (Cast.bobSHK, aikColdKeyHash Cast.alicePoolKeys)
-      ]
-    poolParams = [(aikColdKeyHash Cast.alicePoolKeys, Cast.aliceStakePoolParams)]
-   in
-    mkSnapShot stake delegations poolParams
+  mkSnapShotFromStakePoolParams
+    ( ActiveStake
+        ( VMap.fromList
+            [ (Cast.aliceSHK, mkSwd $ aliceCoinEx2Base <> aliceCoinEx2Ptr)
+            , (Cast.bobSHK, mkSwd bobInitCoin)
+            ]
+        )
+    )
+    poolParamsEx5
+  where
+    mkSwd = (`StakeWithDelegation` aikColdKeyHash Cast.alicePoolKeys) . unsafeNonZero . toCompactPartial
 
 expectedStEx3 :: ChainState ShelleyEra
 expectedStEx3 =
@@ -526,21 +526,21 @@ blockEx5 =
 
 snapEx5 :: SnapShot
 snapEx5 =
-  let
-    stake =
-      mkStake
-        [ (Cast.aliceSHK, aliceCoinEx4Base <> aliceCoinEx2Ptr)
-        , (Cast.carlSHK, carlMIR)
-        , (Cast.bobSHK, bobInitCoin)
-        ]
-    delegations =
-      [ (Cast.aliceSHK, aikColdKeyHash Cast.alicePoolKeys)
-      , (Cast.carlSHK, aikColdKeyHash Cast.alicePoolKeys)
-      , (Cast.bobSHK, aikColdKeyHash Cast.alicePoolKeys)
-      ]
-    poolParams = [(aikColdKeyHash Cast.alicePoolKeys, Cast.aliceStakePoolParams)]
-   in
-    mkSnapShot stake delegations poolParams
+  mkSnapShotFromStakePoolParams
+    ( ActiveStake
+        ( VMap.fromList
+            [ (Cast.aliceSHK, mkSwd $ aliceCoinEx4Base <> aliceCoinEx2Ptr)
+            , (Cast.carlSHK, mkSwd carlMIR)
+            , (Cast.bobSHK, mkSwd bobInitCoin)
+            ]
+        )
+    )
+    poolParamsEx5
+  where
+    mkSwd = (`StakeWithDelegation` aikColdKeyHash Cast.alicePoolKeys) . unsafeNonZero . toCompactPartial
+
+poolParamsEx5 :: [StakePoolParams]
+poolParamsEx5 = [Cast.aliceStakePoolParams]
 
 pdEx5 :: PoolDistr
 pdEx5 =
@@ -783,17 +783,18 @@ blockEx9 =
 
 snapEx9 :: SnapShot
 snapEx9 =
-  let
-    stake =
-      mkStake
-        [ (Cast.bobSHK, bobInitCoin <> bobRAcnt8)
-        , (Cast.aliceSHK, aliceCoinEx4Base <> aliceCoinEx2Ptr <> aliceRAcnt8)
-        , (Cast.carlSHK, carlMIR)
-        ]
-    delegations = ssDelegations snapEx5
-    poolParams = ssPoolParams snapEx5
-   in
-    mkSnapShot stake delegations poolParams
+  mkSnapShotFromStakePoolParams
+    ( ActiveStake
+        ( VMap.fromList
+            [ (Cast.bobSHK, mkSwd $ bobInitCoin <> bobRAcnt8)
+            , (Cast.aliceSHK, mkSwd $ aliceCoinEx4Base <> aliceCoinEx2Ptr <> aliceRAcnt8)
+            , (Cast.carlSHK, mkSwd carlMIR)
+            ]
+        )
+    )
+    poolParamsEx5
+  where
+    mkSwd = (`StakeWithDelegation` aikColdKeyHash Cast.alicePoolKeys) . unsafeNonZero . toCompactPartial
 
 expectedStEx9 :: ChainState ShelleyEra
 expectedStEx9 =
@@ -941,7 +942,7 @@ alicePerfEx11 = applyDecay decayFactor alicePerfEx8 <> epoch4Likelihood
     blocks = 0
     t = leaderProbability f relativeStake (unsafeBoundRational 0.5)
     -- everyone has delegated to Alice's Pool
-    Coin stake = sumAllStake (ssStake snapEx5)
+    Coin stake = unNonZero $ sumAllActiveStake $ ssActiveStake snapEx5
     relativeStake = fromRational (stake % supply)
     Coin supply = maxLLSupply <-> reserves12
     f = activeSlotCoeff testGlobals
@@ -1007,19 +1008,17 @@ blockEx12 =
 
 snapEx12 :: SnapShot
 snapEx12 =
-  let
-    stake =
-      mkStake
-        [ (Cast.aliceSHK, aliceRAcnt8 <> aliceCoinEx2Ptr <> aliceCoinEx11Ptr)
-        , (Cast.carlSHK, carlMIR)
-        ]
-    delegations =
-      [ (Cast.aliceSHK, aikColdKeyHash Cast.alicePoolKeys)
-      , (Cast.carlSHK, aikColdKeyHash Cast.alicePoolKeys)
-      ]
-    poolParams = ssPoolParams snapEx9
-   in
-    mkSnapShot stake delegations poolParams
+  mkSnapShotFromStakePoolParams
+    ( ActiveStake
+        ( VMap.fromList
+            [ (Cast.aliceSHK, mkSwd $ aliceRAcnt8 <> aliceCoinEx2Ptr <> aliceCoinEx11Ptr)
+            , (Cast.carlSHK, mkSwd carlMIR)
+            ]
+        )
+    )
+    poolParamsEx5
+  where
+    mkSwd = (`StakeWithDelegation` aikColdKeyHash Cast.alicePoolKeys) . unsafeNonZero . toCompactPartial
 
 expectedStEx12 :: ChainState ShelleyEra
 expectedStEx12 =

@@ -15,11 +15,14 @@ import Cardano.Ledger.Conway.Governance (GovAction, ProposalProcedure, VotingPro
 import Cardano.Ledger.Conway.HuddleSpec (conwayCDDL)
 import Cardano.Ledger.Core
 import Cardano.Ledger.Plutus.Data (Data, Datum)
+import Test.Cardano.Ledger.Alonzo.Arbitrary (genNonEmptyRedeemers)
 import Test.Cardano.Ledger.Binary.Cuddle (
+  huddleAntiCborSpec,
   huddleDecoderEquivalenceSpec,
   huddleRoundTripAnnCborSpec,
   huddleRoundTripArbitraryValidate,
   huddleRoundTripCborSpec,
+  huddleRoundTripGenValidate,
   specWithHuddle,
  )
 import Test.Cardano.Ledger.Common
@@ -30,83 +33,94 @@ spec :: Spec
 spec = do
   describe "CDDL" $ do
     let v = eraProtVerHigh @ConwayEra
-    specWithHuddle conwayCDDL 100 $ do
+    describe "Huddle" $ specWithHuddle conwayCDDL $ do
       -- Value
       huddleRoundTripCborSpec @(Value ConwayEra) v "positive_coin"
       huddleRoundTripArbitraryValidate @(Value ConwayEra) v "value"
       huddleRoundTripCborSpec @(Value ConwayEra) v "value"
+      huddleAntiCborSpec @(Value ConwayEra) v "value"
       -- TxBody
       huddleRoundTripAnnCborSpec @(TxBody TopTx ConwayEra) v "transaction_body"
       -- TODO enable this once map/list expansion has been optimized in cuddle
-      xdescribe "hangs" $ huddleRoundTripArbitraryValidate @(TxBody TopTx ConwayEra) v "transaction_body"
+      xdescribe "fix scripts" $
+        huddleRoundTripArbitraryValidate @(TxBody TopTx ConwayEra) v "transaction_body"
       huddleRoundTripCborSpec @(TxBody TopTx ConwayEra) v "transaction_body"
+      xdescribe "fix transaction_output" $
+        huddleAntiCborSpec @(TxBody TopTx ConwayEra) v "transaction_body"
       -- AuxData
       huddleRoundTripAnnCborSpec @(TxAuxData ConwayEra) v "auxiliary_data"
       -- TODO fails because of plutus scripts
       xdescribe "fix plutus scripts" $
         huddleRoundTripArbitraryValidate @(TxAuxData ConwayEra) v "auxiliary_data"
       huddleRoundTripCborSpec @(TxAuxData ConwayEra) v "auxiliary_data"
+      xdescribe "fix scripts" $ huddleAntiCborSpec @(TxAuxData ConwayEra) v "auxiliary_data"
       -- NativeScript
       huddleRoundTripAnnCborSpec @(Timelock ConwayEra) v "native_script"
       huddleRoundTripArbitraryValidate @(Timelock ConwayEra) v "native_script"
       huddleRoundTripCborSpec @(Timelock ConwayEra) v "native_script"
+      huddleAntiCborSpec @(Timelock ConwayEra) v "native_script"
       -- Data
       huddleRoundTripAnnCborSpec @(Data ConwayEra) v "plutus_data"
       huddleRoundTripArbitraryValidate @(Data ConwayEra) v "plutus_data"
       huddleRoundTripCborSpec @(Data ConwayEra) v "plutus_data"
+      huddleAntiCborSpec @(Data ConwayEra) v "plutus_data"
       -- TxOut
       huddleRoundTripCborSpec @(TxOut ConwayEra) v "transaction_output"
-      -- TODO fails because of `address`
-      xdescribe "fix address" $ huddleRoundTripArbitraryValidate @(TxOut ConwayEra) v "transaction_output"
+      xdescribe "fix scripts" $ huddleRoundTripArbitraryValidate @(TxOut ConwayEra) v "transaction_output"
+      xdescribe "fix distinct_bytes" $ huddleAntiCborSpec @(TxOut ConwayEra) v "transaction_output"
       -- Script
       huddleRoundTripAnnCborSpec @(Script ConwayEra) v "script"
       -- TODO fails because of `plutus_v1_script`
       xdescribe "fix plutus_v1_script" $ huddleRoundTripArbitraryValidate @(Script ConwayEra) v "script"
       huddleRoundTripCborSpec @(Script ConwayEra) v "script"
+      xdescribe "fix distinct_bytes" $ huddleAntiCborSpec @(Script ConwayEra) v "script"
       -- Datum
       huddleRoundTripCborSpec @(Datum ConwayEra) v "datum_option"
+      huddleAntiCborSpec @(Datum ConwayEra) v "datum_option"
       -- TODO NoDatum is encoded as an empty bytestring
       xdescribe "fix NoDatum" $ huddleRoundTripArbitraryValidate @(Datum ConwayEra) v "datum_option"
       -- TxWits
       huddleRoundTripAnnCborSpec @(TxWits ConwayEra) v "transaction_witness_set"
+      xdescribe "fix distinct_bytes" $ huddleAntiCborSpec @(TxWits ConwayEra) v "transaction_witness_set"
       -- TODO fails because of plutus_v1_script
       xdescribe "fix plutus_v1_script" $
         huddleRoundTripArbitraryValidate @(TxWits ConwayEra) v "transaction_witness_set"
       huddleRoundTripCborSpec @(TxWits ConwayEra) v "transaction_witness_set"
       -- PParamsUpdate
       huddleRoundTripCborSpec @(PParamsUpdate ConwayEra) v "protocol_param_update"
-      -- TODO enable this once map/list expansion has been optimized in cuddle
-      xdescribe "hangs" $
-        huddleRoundTripArbitraryValidate @(PParamsUpdate ConwayEra) v "protocol_param_update"
+      huddleAntiCborSpec @(PParamsUpdate ConwayEra) v "protocol_param_update"
+      huddleRoundTripArbitraryValidate @(PParamsUpdate ConwayEra) v "protocol_param_update"
       -- CostModels
       huddleRoundTripCborSpec @CostModels v "cost_models"
       huddleRoundTripArbitraryValidate @CostModels v "cost_models"
       -- Redeemers
       huddleRoundTripAnnCborSpec @(Redeemers ConwayEra) v "redeemers"
-      -- TODO arbitrary can generate empty redeemers, which is not allowed in the CDDL
-      xdescribe "fix redeemers" $ huddleRoundTripArbitraryValidate @(Redeemers ConwayEra) v "redeemers"
+      huddleRoundTripGenValidate @(Redeemers ConwayEra) genNonEmptyRedeemers v "redeemers"
       huddleRoundTripCborSpec @(Redeemers ConwayEra) v "redeemers"
+      huddleAntiCborSpec @(Redeemers ConwayEra) v "redeemers"
       -- Tx
       huddleRoundTripAnnCborSpec @(Tx TopTx ConwayEra) v "transaction"
       -- TODO enable this once map/list expansion has been optimized in cuddle
       xdescribe "hangs" $ huddleRoundTripArbitraryValidate @(Tx TopTx ConwayEra) v "transaction"
       huddleRoundTripCborSpec @(Tx TopTx ConwayEra) v "transaction"
+      xdescribe "fix distinct_bytes" $ huddleAntiCborSpec @(Tx TopTx ConwayEra) v "transaction"
       -- VotingProcedure
       huddleRoundTripCborSpec @(VotingProcedure ConwayEra) v "voting_procedure"
       huddleRoundTripArbitraryValidate @(VotingProcedure ConwayEra) v "voting_procedure"
+      huddleAntiCborSpec @(VotingProcedure ConwayEra) v "voting_procedure"
       -- ProposalProcedure
       huddleRoundTripCborSpec @(ProposalProcedure ConwayEra) v "proposal_procedure"
-      -- TODO This fails because of the hard-coded `reward_account` in the CDDL
-      xdescribe "fix reward_account" $
-        huddleRoundTripArbitraryValidate @(ProposalProcedure ConwayEra) v "proposal_procedure"
+      huddleRoundTripArbitraryValidate @(ProposalProcedure ConwayEra) v "proposal_procedure"
+      xdescribe "fix major_protocol_version" $
+        huddleAntiCborSpec @(ProposalProcedure ConwayEra) v "proposal_procedure"
       -- GovAction
       huddleRoundTripCborSpec @(GovAction ConwayEra) v "gov_action"
-      -- TODO enable this once map/list expansion has been optimized in cuddle
-      xdescribe "hangs" $ huddleRoundTripArbitraryValidate @(GovAction ConwayEra) v "gov_action"
+      huddleRoundTripArbitraryValidate @(GovAction ConwayEra) v "gov_action"
+      xdescribe "fix protocol_version" $
+        huddleAntiCborSpec @(GovAction ConwayEra) v "gov_action"
       -- TxCert
       huddleRoundTripCborSpec @(TxCert ConwayEra) v "certificate"
-      -- TODO this fails because of the hard-coded `unit_interval` in the CDDL
-      xdescribe "fix unit_interval" $ huddleRoundTripArbitraryValidate @(TxCert ConwayEra) v "certificate"
+      huddleRoundTripArbitraryValidate @(TxCert ConwayEra) v "certificate"
       describe "DecCBOR instances equivalence via CDDL" $ do
         huddleDecoderEquivalenceSpec @(TxBody TopTx ConwayEra) v "transaction_body"
         huddleDecoderEquivalenceSpec @(TxAuxData ConwayEra) v "auxiliary_data"

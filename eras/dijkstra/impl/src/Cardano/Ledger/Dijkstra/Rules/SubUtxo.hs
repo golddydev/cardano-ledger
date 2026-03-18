@@ -21,7 +21,6 @@ module Cardano.Ledger.Dijkstra.Rules.SubUtxo (
   DijkstraSubUtxoEvent (..),
 ) where
 
-import Cardano.Ledger.Alonzo.Plutus.Context (EraPlutusContext)
 import Cardano.Ledger.BaseTypes
 import Cardano.Ledger.Binary (
   DecCBOR (..),
@@ -31,13 +30,16 @@ import Cardano.Ledger.Binary.Coders
 import Cardano.Ledger.Coin (Coin)
 import Cardano.Ledger.Conway.Core
 import Cardano.Ledger.Conway.Governance
+import Cardano.Ledger.Conway.Rules (ConwayUtxoPredFailure)
 import Cardano.Ledger.Dijkstra.Era (
   DijkstraEra,
   DijkstraSUBUTXO,
-  DijkstraSUBUTXOS,
  )
-import Cardano.Ledger.Dijkstra.Rules.SubUtxos (DijkstraSubUtxosPredFailure)
-import Cardano.Ledger.Shelley.LedgerState (UTxOState)
+import Cardano.Ledger.Dijkstra.Rules.Utxo (
+  DijkstraUtxoPredFailure (..),
+  conwayToDijkstraUtxoPredFailure,
+ )
+import Cardano.Ledger.Shelley.LedgerState (UTxO, UTxOState)
 import Cardano.Ledger.Shelley.Rules (UtxoEnv)
 import Cardano.Ledger.TxIn (TxIn)
 import Control.DeepSeq (NFData)
@@ -49,8 +51,7 @@ import GHC.Generics (Generic)
 import NoThunks.Class (InspectHeapNamed (..), NoThunks (..))
 
 data DijkstraSubUtxoPredFailure era
-  = SubUtxosFailure (PredicateFailure (EraRule "SUBUTXOS" era))
-  | -- | The bad transaction inputs
+  = -- | The bad transaction inputs
     SubBadInputsUTxO (NonEmptySet TxIn)
   | SubOutsideValidityIntervalUTxO
       -- | transaction's validity interval
@@ -70,8 +71,6 @@ data DijkstraSubUtxoPredFailure era
       Network
       -- | the set of reward addresses with incorrect network IDs
       (NonEmptySet AccountAddress)
-  | -- | list of supplied transaction outputs that are too small
-    SubOutputTooSmallUTxO (NonEmpty (TxOut era))
   | -- | list of supplied bad transaction outputs
     SubOutputBootAddrAttrsTooBig (NonEmpty (TxOut era))
   | -- | list of supplied bad transaction output triples (actualSize,PParameterMaxValue,TxOut)
@@ -89,7 +88,6 @@ data DijkstraSubUtxoPredFailure era
 deriving stock instance
   ( Era era
   , Eq (Value era)
-  , Eq (PredicateFailure (EraRule "SUBUTXOS" era))
   , Eq (TxOut era)
   , Eq (Script era)
   , Eq TxIn
@@ -99,7 +97,6 @@ deriving stock instance
 deriving stock instance
   ( Era era
   , Show (Value era)
-  , Show (PredicateFailure (EraRule "SUBUTXOS" era))
   , Show (TxOut era)
   , Show (Script era)
   , Show TxIn
@@ -115,7 +112,6 @@ instance
   ( Era era
   , NFData (Value era)
   , NFData (TxOut era)
-  , NFData (PredicateFailure (EraRule "SUBUTXOS" era))
   ) =>
   NFData (DijkstraSubUtxoPredFailure era)
 
@@ -125,23 +121,31 @@ type instance EraRuleEvent "SUBUTXO" DijkstraEra = DijkstraSubUtxoEvent Dijkstra
 
 instance InjectRuleFailure "SUBUTXO" DijkstraSubUtxoPredFailure DijkstraEra
 
-instance InjectRuleFailure "SUBUTXO" DijkstraSubUtxosPredFailure DijkstraEra where
-  injectFailure = SubUtxosFailure
+instance InjectRuleFailure "SUBUTXO" DijkstraUtxoPredFailure DijkstraEra where
+  injectFailure = dijkstraUtxoToDijkstraSubUtxoPredFailure
+
+instance InjectRuleFailure "SUBUTXO" ConwayUtxoPredFailure DijkstraEra where
+  injectFailure = dijkstraUtxoToDijkstraSubUtxoPredFailure . conwayToDijkstraUtxoPredFailure
 
 instance InjectRuleEvent "SUBUTXO" DijkstraSubUtxoEvent DijkstraEra
 
-newtype DijkstraSubUtxoEvent era = SubUtxosEvent (Event (EraRule "SUBUTXOS" era))
+data DijkstraSubUtxoEvent era
+  = TotalDeposits (SafeHash EraIndependentTxBody) Coin
+  | -- | The UTxOs consumed and created by a signal tx
+    TxUTxODiff
+      -- | UTxO consumed
+      (UTxO era)
+      -- | UTxO created
+      (UTxO era)
   deriving (Generic)
 
-deriving instance Eq (Event (EraRule "SUBUTXOS" era)) => Eq (DijkstraSubUtxoEvent era)
+deriving instance (Era era, Eq (TxOut era)) => Eq (DijkstraSubUtxoEvent era)
 
-instance NFData (Event (EraRule "SUBUTXOS" era)) => NFData (DijkstraSubUtxoEvent era)
+instance (Era era, NFData (TxOut era)) => NFData (DijkstraSubUtxoEvent era)
 
 instance
   ( ConwayEraGov era
   , EraRule "SUBUTXO" era ~ DijkstraSUBUTXO era
-  , EraRule "SUBUTXOS" era ~ DijkstraSUBUTXOS era
-  , Embed (EraRule "SUBUTXOS" era) (DijkstraSUBUTXO era)
   , BabbageEraTxBody era
   ) =>
   STS (DijkstraSUBUTXO era)
@@ -157,71 +161,77 @@ instance
 
 dijkstraSubUtxoTransition ::
   forall era.
-  ( EraRule "SUBUTXO" era ~ DijkstraSUBUTXO era
-  , EraRule "SUBUTXOS" era ~ DijkstraSUBUTXOS era
-  , Embed (EraRule "SUBUTXOS" era) (DijkstraSUBUTXO era)
-  ) =>
+  EraRule "SUBUTXO" era ~ DijkstraSUBUTXO era =>
   TransitionRule (EraRule "SUBUTXO" era)
 dijkstraSubUtxoTransition = do
-  TRC (env, state, signal) <- judgmentContext
-  trans @(EraRule "SUBUTXOS" era) $
-    TRC (env, state, signal)
-
-instance
-  ( ConwayEraGov era
-  , ConwayEraTxBody era
-  , EraPlutusContext era
-  , EraRule "SUBUTXOS" era ~ DijkstraSUBUTXOS era
-  ) =>
-  Embed (DijkstraSUBUTXOS era) (DijkstraSUBUTXO era)
-  where
-  wrapFailed = SubUtxosFailure
-  wrapEvent = SubUtxosEvent
+  TRC (_, state, _) <- judgmentContext
+  pure state
 
 instance
   ( Era era
   , EncCBOR (TxOut era)
-  , EncCBOR (PredicateFailure (EraRule "SUBUTXOS" era))
   ) =>
   EncCBOR (DijkstraSubUtxoPredFailure era)
   where
   encCBOR =
     encode . \case
-      SubUtxosFailure a -> Sum (SubUtxosFailure @era) 0 !> To a
-      SubBadInputsUTxO ins -> Sum (SubBadInputsUTxO @era) 1 !> To ins
-      SubOutsideValidityIntervalUTxO a b -> Sum SubOutsideValidityIntervalUTxO 2 !> To a !> To b
-      SubMaxTxSizeUTxO mm -> Sum SubMaxTxSizeUTxO 3 !> To mm
-      SubInputSetEmptyUTxO -> Sum SubInputSetEmptyUTxO 4
-      SubWrongNetwork right wrongs -> Sum (SubWrongNetwork @era) 5 !> To right !> To wrongs
-      SubWrongNetworkWithdrawal right wrongs -> Sum (SubWrongNetworkWithdrawal @era) 6 !> To right !> To wrongs
-      SubOutputTooSmallUTxO outs -> Sum (SubOutputTooSmallUTxO @era) 7 !> To outs
-      SubOutputBootAddrAttrsTooBig outs -> Sum (SubOutputBootAddrAttrsTooBig @era) 8 !> To outs
-      SubOutputTooBigUTxO outs -> Sum (SubOutputTooBigUTxO @era) 9 !> To outs
-      SubWrongNetworkInTxBody mm -> Sum SubWrongNetworkInTxBody 10 !> To mm
-      SubOutsideForecast a -> Sum SubOutsideForecast 11 !> To a
-      SubBabbageOutputTooSmallUTxO x -> Sum SubBabbageOutputTooSmallUTxO 12 !> To x
+      SubBadInputsUTxO ins -> Sum (SubBadInputsUTxO @era) 0 !> To ins
+      SubOutsideValidityIntervalUTxO a b -> Sum SubOutsideValidityIntervalUTxO 1 !> To a !> To b
+      SubMaxTxSizeUTxO mm -> Sum SubMaxTxSizeUTxO 2 !> To mm
+      SubInputSetEmptyUTxO -> Sum SubInputSetEmptyUTxO 3
+      SubWrongNetwork right wrongs -> Sum (SubWrongNetwork @era) 4 !> To right !> To wrongs
+      SubWrongNetworkWithdrawal right wrongs -> Sum (SubWrongNetworkWithdrawal @era) 5 !> To right !> To wrongs
+      SubOutputBootAddrAttrsTooBig outs -> Sum (SubOutputBootAddrAttrsTooBig @era) 6 !> To outs
+      SubOutputTooBigUTxO outs -> Sum (SubOutputTooBigUTxO @era) 7 !> To outs
+      SubWrongNetworkInTxBody mm -> Sum SubWrongNetworkInTxBody 8 !> To mm
+      SubOutsideForecast a -> Sum SubOutsideForecast 9 !> To a
+      SubBabbageOutputTooSmallUTxO x -> Sum SubBabbageOutputTooSmallUTxO 10 !> To x
 
 instance
   ( Era era
   , DecCBOR (TxOut era)
   , EncCBOR (Value era)
   , DecCBOR (Value era)
-  , DecCBOR (PredicateFailure (EraRule "SUBUTXOS" era))
   ) =>
   DecCBOR (DijkstraSubUtxoPredFailure era)
   where
   decCBOR = decode . Summands "DijkstraSubUtxoPredFailure" $ \case
-    0 -> SumD SubUtxosFailure <! From
-    1 -> SumD SubBadInputsUTxO <! From
-    2 -> SumD SubOutsideValidityIntervalUTxO <! From <! From
-    3 -> SumD SubMaxTxSizeUTxO <! From
-    4 -> SumD SubInputSetEmptyUTxO
-    5 -> SumD SubWrongNetwork <! From <! From
-    6 -> SumD SubWrongNetworkWithdrawal <! From <! From
-    7 -> SumD SubOutputTooSmallUTxO <! From
-    8 -> SumD SubOutputBootAddrAttrsTooBig <! From
-    9 -> SumD SubOutputTooBigUTxO <! From
-    10 -> SumD SubWrongNetworkInTxBody <! From
-    11 -> SumD SubOutsideForecast <! From
-    12 -> SumD SubBabbageOutputTooSmallUTxO <! From
+    0 -> SumD SubBadInputsUTxO <! From
+    1 -> SumD SubOutsideValidityIntervalUTxO <! From <! From
+    2 -> SumD SubMaxTxSizeUTxO <! From
+    3 -> SumD SubInputSetEmptyUTxO
+    4 -> SumD SubWrongNetwork <! From <! From
+    5 -> SumD SubWrongNetworkWithdrawal <! From <! From
+    6 -> SumD SubOutputBootAddrAttrsTooBig <! From
+    7 -> SumD SubOutputTooBigUTxO <! From
+    8 -> SumD SubWrongNetworkInTxBody <! From
+    9 -> SumD SubOutsideForecast <! From
+    10 -> SumD SubBabbageOutputTooSmallUTxO <! From
     n -> Invalid n
+
+dijkstraUtxoToDijkstraSubUtxoPredFailure ::
+  DijkstraUtxoPredFailure era -> DijkstraSubUtxoPredFailure era
+dijkstraUtxoToDijkstraSubUtxoPredFailure = \case
+  UtxosFailure _ -> error "Impossible: `UtxosFailure` for SUBUTXO"
+  BadInputsUTxO x -> SubBadInputsUTxO x
+  OutsideValidityIntervalUTxO vi slotNo -> SubOutsideValidityIntervalUTxO vi slotNo
+  MaxTxSizeUTxO m -> SubMaxTxSizeUTxO m
+  InputSetEmptyUTxO -> SubInputSetEmptyUTxO
+  FeeTooSmallUTxO _ -> error "Impossible: `FeeTooSmallUTxO` for SUBUTXO"
+  ValueNotConservedUTxO _ -> error "Impossible: `ValueNotConservedUTxO` for SUBUTXO"
+  WrongNetwork x y -> SubWrongNetwork x y
+  WrongNetworkWithdrawal x y -> SubWrongNetworkWithdrawal x y
+  OutputBootAddrAttrsTooBig xs -> SubOutputBootAddrAttrsTooBig xs
+  OutputTooBigUTxO xs -> SubOutputTooBigUTxO xs
+  InsufficientCollateral _ _ -> error "Impossible: `InsufficientCollateral` for SUBUTXO"
+  ScriptsNotPaidUTxO _ -> error "Impossible: `ScriptsNotPaidUTxO` for SUBUTXO"
+  ExUnitsTooBigUTxO _ -> error "Impossible: `ExUnitsTooBigUTxO` for SUBUTXO"
+  CollateralContainsNonADA _ -> error "Impossible: `CollateralContainsNonADA` for SUBUTXO"
+  WrongNetworkInTxBody m -> SubWrongNetworkInTxBody m
+  OutsideForecast sno -> SubOutsideForecast sno
+  TooManyCollateralInputs _ -> error "Impossible: `TooManyCollateralInputs` for SUBUTXO"
+  NoCollateralInputs -> error "Impossible: `NoCollateralInputs` for SUBUTXO"
+  IncorrectTotalCollateralField _ _ -> error "Impossible: `IncorrectTotalCollateralField` for SUBUTXO"
+  BabbageOutputTooSmallUTxO txouts -> SubBabbageOutputTooSmallUTxO txouts
+  BabbageNonDisjointRefInputs _ -> error "Impossible: `BabbageNonDisjointRefInputs` for SUBUTXO"
+  PtrPresentInCollateralReturn _ -> error "Impossible: `PtrPresentInCollateralReturn` for SUBUTXO"

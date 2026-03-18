@@ -28,6 +28,10 @@ deriving instance Ord DepositPurpose
 
 deriving instance Ord Tag
 
+deriving instance Ord HSLanguage
+
+deriving instance Ord LanguageCostModels
+
 deriving instance Ord Credential
 
 deriving instance Ord GovRole
@@ -67,6 +71,10 @@ instance NFData BootstrapAddr
 instance NFData Timelock
 
 instance NFData HSTimelock
+
+instance NFData HSLanguage
+
+instance NFData LanguageCostModels
 
 instance NFData HSPlutusScript
 
@@ -216,6 +224,10 @@ instance ToExpr Timelock
 
 instance ToExpr HSTimelock
 
+instance ToExpr HSLanguage
+
+instance ToExpr LanguageCostModels
+
 instance ToExpr HSPlutusScript
 
 instance ToExpr TxBody
@@ -320,6 +332,11 @@ instance SpecNormalize Timelock
 
 instance SpecNormalize HSTimelock
 
+instance SpecNormalize Agda.LanguageCostModels where
+  specNormalize = MkLanguageCostModels . sortOn fst . lcmLanguageCostModels
+
+instance SpecNormalize HSLanguage
+
 instance SpecNormalize HSPlutusScript
 
 instance SpecNormalize UTxOState
@@ -377,12 +394,16 @@ instance SpecNormalize Snapshots
 
 instance SpecNormalize Snapshot where
   specNormalize (MkSnapshot s d p) =
-    MkSnapshot (specNormalize $ removeZero s) (specNormalize $ removeZero d) p
+    MkSnapshot (specNormalize s') (specNormalize d') p
     where
-      removeZero (MkHSMap l) = MkHSMap $ f l
-      f [] = []
-      f ((_, 0) : xs) = f xs
-      f (x : xs) = x : f xs
+      s' = removeZero s
+      -- Only keep delegations for credentials that have non-zero stake,
+      -- since ActiveStake drops zero-stake credentials
+      d' = keepOnlyStaked s' (removeZero d)
+      removeZero (MkHSMap l) = MkHSMap $ filter ((/= 0) . snd) l
+      keepOnlyStaked (MkHSMap sl) (MkHSMap dl) =
+        let stakeKeys = Set.fromList (map fst sl)
+         in MkHSMap $ filter ((`Set.member` stakeKeys) . fst) dl
 
 instance SpecNormalize Acnt
 

@@ -1,7 +1,27 @@
 # Version history for `cardano-ledger-core`
 
+## 1.20.0.0
+
+* Remove orphan `NoThunks`, `NFData`, `FromJSON`, `ToJSON` instances for `IPv4` and `IPv6`
+  - Moved to `cardano-base:Cardano.Base.IP`
+* Remove `ToCBOR` and `FromCBOR` instances for `Nonce`
+* Remove default implementation of `fromPlutusData` in `ToPlutusData` typeclass.
+
+### `testlib`
+
+* Modify `ToExpr` instance for `Mismatch` to display type-level `r` parameter using `Typeable`
+
 ## 1.19.0.0
 
+* In `SnapShot`, subsume `ssDelegations` into `ssActiveStake`.
+  - Add `ActiveStake`, `sumAllActiveStake`, `sumCredentialsCompactActiveStake`.
+  - Add `StakeWithDelegation` for the range of `ActiveStake`.
+  - Remove lenses: `ssStakeDistrL`, `ssDelegationsL`.
+* Add `mkSnapShot` and `resetStakePoolsSnapShot`
+* Remove `ssPoolParams` from `Snapshot`  and `ssPoolParamsL`
+* Rename `ssStake` to `ssActiveStake`.
+* Deprecate `ssStakeL` in favor of new `ssActiveStakeL`
+* Add `bhviewProtVer` to `BHeaderView`
 * Remove re-exports of `Reward` and `RewardType` from `Cardano.Ledger.Core`
 * Add re-exports of `Addr`, `AccountAddress`, `Withdrawals` and `AccountId` from `Cardano.Ledger.Core`
 * Add `HasZero` instance for `CompactForm Coin`
@@ -70,7 +90,6 @@
 * Add `positiveUnitIntervalRelaxToUnitInterval`, `positiveUnitIntervalRelaxToPositiveInterval` and  `positiveIntervalRelaxToNonNegativeInterval`
 * Changed the type of the following functions by adding `Network` argument:
   - `stakePoolStateToStakePoolParams`
-  - `snapShotFromInstantStake`
 * Changed type of `spsRewardAccount` in `StakePoolState` to `Credential Staking`
 * Changed type of `parseCostModels` by adding `[Language]` argument
 * Add `HasOKey` instance for `TxId (TxBody l era)`
@@ -85,7 +104,6 @@
 * Remove `Generic` instance from `BoundedRatio` type
 * Remove deprecated function `addrPtrNormalize`
 * Remove deprecated functions `mkTxIx`, `mkCertIx`, `hashAnchorData`
-* Remove deprecated functions `bheader`, `bbody`
 * Remove deprecated methods `fromTxSeq`, `toTxSeq`, `hashTxSeq` from `EraBlockBody` typeclass
 * Remove deprecated function `normalizePtr`
 * Remove deprecated functions `hashSignature`, `hashVerKeyVRF`
@@ -127,6 +145,7 @@
 
 ### `cddl`
 
+* Add `pickOne`, `genBytesTerm`, `genStringTerm`, `genArrayTerm`
 * Re-export necessary functionality from `cuddle` for use in the eras, crucially hiding `(=:=)` and `(=:~)`.
 * Change `HuddleRule` and related typeclasses to imply their name using the type-level string via a `Proxy`.
 * Add `HuddleRule1` typeclass.
@@ -136,6 +155,8 @@
 
 ### `testlib`
 
+* Add `mkActiveStake` to make an `ActiveStake` combining two maps (stake and delegation)
+* Add `mkSnapShotFromStakePoolParams` and `resetStakePoolSnapShotFromPoolParams`
 * Stop re-exporting QuickCheck's `NonZero` as it conflcicts with our internal type.
 * Rename `RewardAccount` to `AccountAddress`
   - `deserialiseRewardAccountOld` to `deserialiseAccountAddressOld`.

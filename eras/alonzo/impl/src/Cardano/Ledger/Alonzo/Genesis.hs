@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -68,9 +69,9 @@ import qualified Data.Aeson as Aeson
 import Data.Functor.Identity (Identity)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
+import Data.Word (Word16, Word32)
 import GHC.Generics (Generic)
 import NoThunks.Class (NoThunks)
-import Numeric.Natural (Natural)
 
 -- | All configuration that is necessary to bootstrap AlonzoEra from ShelleyGenesis
 data AlonzoGenesis = AlonzoGenesisWrapper
@@ -90,16 +91,15 @@ newtype AlonzoExtraConfig = AlonzoExtraConfig
   deriving (Eq)
   deriving newtype (NFData, NoThunks, Show)
 
-instance DecCBOR AlonzoExtraConfig
+instance DecCBOR AlonzoExtraConfig where
+  decCBOR = decode (RecD AlonzoExtraConfig <! D (decodeNullMaybe decodeCostModelsLenient))
+  {-# INLINE decCBOR #-}
 
 instance EncCBOR AlonzoExtraConfig
 
 instance FromCBOR AlonzoExtraConfig where
-  fromCBOR =
-    eraDecoder @AlonzoEra $
-      decode $
-        RecD AlonzoExtraConfig
-          <! D (decodeNullMaybe decodeCostModelsLenient)
+  fromCBOR = fromEraCBOR @AlonzoEra
+  {-# INLINE fromCBOR #-}
 
 instance ToCBOR AlonzoExtraConfig where
   toCBOR x@(AlonzoExtraConfig _) =
@@ -123,9 +123,9 @@ pattern AlonzoGenesis ::
   Prices ->
   ExUnits ->
   ExUnits ->
-  Natural ->
-  Natural ->
-  Natural ->
+  Word32 ->
+  Word16 ->
+  Word16 ->
   Maybe AlonzoExtraConfig ->
   AlonzoGenesis
 pattern AlonzoGenesis
@@ -184,24 +184,26 @@ instance EraGenesis AlonzoEra where
   type Genesis AlonzoEra = AlonzoGenesis
 
 -- | Genesis types are always encoded with the version of era they are defined in.
-instance DecCBOR AlonzoGenesis
+instance DecCBOR AlonzoGenesis where
+  decCBOR =
+    decode $
+      RecD AlonzoGenesis
+        <! From
+        <! D (decodeCostModel PlutusV1)
+        <! From
+        <! From
+        <! From
+        <! From
+        <! From
+        <! From
+        <! From
+  {-# INLINE decCBOR #-}
 
 instance EncCBOR AlonzoGenesis
 
 instance FromCBOR AlonzoGenesis where
-  fromCBOR =
-    eraDecoder @AlonzoEra $
-      decode $
-        RecD AlonzoGenesis
-          <! From
-          <! D (decodeCostModel PlutusV1)
-          <! From
-          <! From
-          <! From
-          <! From
-          <! From
-          <! From
-          <! From
+  fromCBOR = fromEraCBOR @AlonzoEra
+  {-# INLINE fromCBOR #-}
 
 instance ToCBOR AlonzoGenesis where
   toCBOR x@(AlonzoGenesis _ _ _ _ _ _ _ _ _) =

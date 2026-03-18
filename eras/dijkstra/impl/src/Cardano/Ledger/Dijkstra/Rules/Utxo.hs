@@ -32,6 +32,7 @@ import qualified Cardano.Ledger.Alonzo.Rules as Alonzo
 import Cardano.Ledger.Babbage.Rules (
   BabbageUtxoPredFailure,
   babbageUtxoValidation,
+  updateUTxOStateByTxValidity,
  )
 import Cardano.Ledger.BaseTypes (
   Mismatch (..),
@@ -59,7 +60,6 @@ import Cardano.Ledger.Conway.Rules (
   ConwayUTXOS,
   ConwayUtxoPredFailure,
   ConwayUtxosPredFailure (..),
-  UtxoEnv,
   allegraToConwayUtxoPredFailure,
   alonzoToConwayUtxoPredFailure,
   babbageToConwayUtxoPredFailure,
@@ -70,14 +70,15 @@ import Cardano.Ledger.Dijkstra.Era (DijkstraEra, DijkstraUTXO)
 import Cardano.Ledger.Dijkstra.Rules.Utxos ()
 import Cardano.Ledger.Plutus (ExUnits)
 import Cardano.Ledger.Rules.ValidationMode (failOnJustStatic)
-import Cardano.Ledger.Shelley.LedgerState (UTxOState)
-import qualified Cardano.Ledger.Shelley.LedgerState as Shelley (UTxOState)
+import Cardano.Ledger.Shelley.LedgerState (UTxOState (..))
 import Cardano.Ledger.Shelley.Rules (
   ShelleyUtxoPredFailure,
+  UtxoEnv (..),
+  validSizeComputationCheck,
  )
-import qualified Cardano.Ledger.Shelley.Rules as Shelley (UtxoEnv, validSizeComputationCheck)
 import Cardano.Ledger.State (
   EraCertState (..),
+  EraStake,
   EraUTxO,
  )
 import Cardano.Ledger.TxIn (TxIn)
@@ -91,13 +92,11 @@ import Control.State.Transition.Extended (
   judgmentContext,
   trans,
  )
-import Data.Coerce (coerce)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.NonEmpty (NonEmptyMap)
 import Data.Set.NonEmpty (NonEmptySet)
-import Data.Word (Word32)
+import Data.Word (Word16, Word32)
 import GHC.Generics (Generic)
-import GHC.Natural (Natural)
 import Lens.Micro ((^.))
 import NoThunks.Class (InspectHeapNamed (..), NoThunks (..))
 
@@ -131,8 +130,6 @@ data DijkstraUtxoPredFailure era
       Network
       -- | the set of reward addresses with incorrect network IDs
       (NonEmptySet AccountAddress)
-  | -- | list of supplied transaction outputs that are too small
-    OutputTooSmallUTxO (NonEmpty (TxOut era))
   | -- | list of supplied bad transaction outputs
     OutputBootAddrAttrsTooBig (NonEmpty (TxOut era))
   | -- | list of supplied bad transaction output triples (actualSize,PParameterMaxValue,TxOut)
@@ -155,7 +152,7 @@ data DijkstraUtxoPredFailure era
     OutsideForecast SlotNo
   | -- | There are too many collateral inputs
     TooManyCollateralInputs
-      (Mismatch RelLTEQ Natural)
+      (Mismatch RelLTEQ Word16)
   | NoCollateralInputs
   | -- | The collateral is not equivalent to the total collateral asserted by the transaction
     IncorrectTotalCollateralField
@@ -253,12 +250,13 @@ validateNoPtrInCollateralReturn txBody = do
         Just collateralReturn
   failOnJustStatic hasCollateralTxOut (injectFailure . PtrPresentInCollateralReturn)
 
-utxoTransition ::
+dijkstraUtxoTransition ::
   forall era.
   ( EraUTxO era
   , EraCertState era
   , BabbageEraTxBody era
-  , AlonzoEraTxWits era
+  , AlonzoEraTx era
+  , EraStake era
   , InjectRuleFailure "UTXO" ShelleyUtxoPredFailure era
   , InjectRuleFailure "UTXO" AllegraUtxoPredFailure era
   , InjectRuleFailure "UTXO" AlonzoUtxoPredFailure era
@@ -269,27 +267,28 @@ utxoTransition ::
   , Signal (EraRule "UTXO" era) ~ Tx TopTx era
   , BaseM (EraRule "UTXO" era) ~ ShelleyBase
   , STS (EraRule "UTXO" era)
+  , Event (EraRule "UTXO" era) ~ AlonzoUtxoEvent era
   , -- In this function we we call the UTXOS rule, so we need some assumptions
-    Environment (EraRule "UTXOS" era) ~ UtxoEnv era
+    Environment (EraRule "UTXOS" era) ~ PParams era
   , State (EraRule "UTXOS" era) ~ UTxOState era
   , Signal (EraRule "UTXOS" era) ~ Tx TopTx era
   , Embed (EraRule "UTXOS" era) (EraRule "UTXO" era)
   ) =>
   TransitionRule (EraRule "UTXO" era)
-utxoTransition = do
-  TRC (_, _, tx) <- judgmentContext
+dijkstraUtxoTransition = do
+  TRC (UtxoEnv _ pp certState, utxos, tx) <- judgmentContext
   babbageUtxoValidation
-
   validateNoPtrInCollateralReturn $ tx ^. bodyTxL
-
-  trans @(EraRule "UTXOS" era) =<< coerce <$> judgmentContext
+  updatedUtxos <- trans @(EraRule "UTXOS" era) $ TRC (pp, utxos, tx)
+  updateUTxOStateByTxValidity pp certState (utxosGovState utxos) tx updatedUtxos
 
 instance
   forall era.
   ( EraTx era
   , EraUTxO era
+  , EraStake era
   , ConwayEraTxBody era
-  , AlonzoEraTxWits era
+  , AlonzoEraTx era
   , EraRule "UTXO" era ~ DijkstraUTXO era
   , InjectRuleFailure "UTXO" ShelleyUtxoPredFailure era
   , InjectRuleFailure "UTXO" AllegraUtxoPredFailure era
@@ -304,7 +303,7 @@ instance
   , STS (EraRule "UTXO" era)
   , -- In this function we we call the UTXOS rule, so we need some assumptions
     Embed (EraRule "UTXOS" era) (DijkstraUTXO era)
-  , Environment (EraRule "UTXOS" era) ~ UtxoEnv era
+  , Environment (EraRule "UTXOS" era) ~ PParams era
   , State (EraRule "UTXOS" era) ~ UTxOState era
   , Signal (EraRule "UTXOS" era) ~ Tx TopTx era
   , EraCertState era
@@ -313,18 +312,18 @@ instance
   ) =>
   STS (DijkstraUTXO era)
   where
-  type State (DijkstraUTXO era) = Shelley.UTxOState era
+  type State (DijkstraUTXO era) = UTxOState era
   type Signal (DijkstraUTXO era) = Tx TopTx era
-  type Environment (DijkstraUTXO era) = Shelley.UtxoEnv era
+  type Environment (DijkstraUTXO era) = UtxoEnv era
   type BaseM (DijkstraUTXO era) = ShelleyBase
   type PredicateFailure (DijkstraUTXO era) = DijkstraUtxoPredFailure era
   type Event (DijkstraUTXO era) = AlonzoUtxoEvent era
 
   initialRules = []
 
-  transitionRules = [utxoTransition @era]
+  transitionRules = [dijkstraUtxoTransition @era]
 
-  assertions = [Shelley.validSizeComputationCheck]
+  assertions = [validSizeComputationCheck]
 
 instance
   ( Era era
@@ -360,21 +359,20 @@ instance
       ValueNotConservedUTxO mm -> Sum (ValueNotConservedUTxO @era) 6 !> To mm
       WrongNetwork right wrongs -> Sum (WrongNetwork @era) 7 !> To right !> To wrongs
       WrongNetworkWithdrawal right wrongs -> Sum (WrongNetworkWithdrawal @era) 8 !> To right !> To wrongs
-      OutputTooSmallUTxO outs -> Sum (OutputTooSmallUTxO @era) 9 !> To outs
-      OutputBootAddrAttrsTooBig outs -> Sum (OutputBootAddrAttrsTooBig @era) 10 !> To outs
-      OutputTooBigUTxO outs -> Sum (OutputTooBigUTxO @era) 11 !> To outs
-      InsufficientCollateral a b -> Sum InsufficientCollateral 12 !> To a !> To b
-      ScriptsNotPaidUTxO a -> Sum ScriptsNotPaidUTxO 13 !> To a
-      ExUnitsTooBigUTxO mm -> Sum ExUnitsTooBigUTxO 14 !> To mm
-      CollateralContainsNonADA a -> Sum CollateralContainsNonADA 15 !> To a
-      WrongNetworkInTxBody mm -> Sum WrongNetworkInTxBody 16 !> To mm
-      OutsideForecast a -> Sum OutsideForecast 17 !> To a
-      TooManyCollateralInputs mm -> Sum TooManyCollateralInputs 18 !> To mm
-      NoCollateralInputs -> Sum NoCollateralInputs 19
-      IncorrectTotalCollateralField c1 c2 -> Sum IncorrectTotalCollateralField 20 !> To c1 !> To c2
-      BabbageOutputTooSmallUTxO x -> Sum BabbageOutputTooSmallUTxO 21 !> To x
-      BabbageNonDisjointRefInputs x -> Sum BabbageNonDisjointRefInputs 22 !> To x
-      PtrPresentInCollateralReturn x -> Sum PtrPresentInCollateralReturn 23 !> To x
+      OutputBootAddrAttrsTooBig outs -> Sum (OutputBootAddrAttrsTooBig @era) 9 !> To outs
+      OutputTooBigUTxO outs -> Sum (OutputTooBigUTxO @era) 10 !> To outs
+      InsufficientCollateral a b -> Sum InsufficientCollateral 11 !> To a !> To b
+      ScriptsNotPaidUTxO a -> Sum ScriptsNotPaidUTxO 12 !> To a
+      ExUnitsTooBigUTxO mm -> Sum ExUnitsTooBigUTxO 13 !> To mm
+      CollateralContainsNonADA a -> Sum CollateralContainsNonADA 14 !> To a
+      WrongNetworkInTxBody mm -> Sum WrongNetworkInTxBody 15 !> To mm
+      OutsideForecast a -> Sum OutsideForecast 16 !> To a
+      TooManyCollateralInputs mm -> Sum TooManyCollateralInputs 17 !> To mm
+      NoCollateralInputs -> Sum NoCollateralInputs 18
+      IncorrectTotalCollateralField c1 c2 -> Sum IncorrectTotalCollateralField 19 !> To c1 !> To c2
+      BabbageOutputTooSmallUTxO x -> Sum BabbageOutputTooSmallUTxO 20 !> To x
+      BabbageNonDisjointRefInputs x -> Sum BabbageNonDisjointRefInputs 21 !> To x
+      PtrPresentInCollateralReturn x -> Sum PtrPresentInCollateralReturn 22 !> To x
 
 instance
   ( Era era
@@ -395,21 +393,20 @@ instance
     6 -> SumD ValueNotConservedUTxO <! From
     7 -> SumD WrongNetwork <! From <! From
     8 -> SumD WrongNetworkWithdrawal <! From <! From
-    9 -> SumD OutputTooSmallUTxO <! From
-    10 -> SumD OutputBootAddrAttrsTooBig <! From
-    11 -> SumD OutputTooBigUTxO <! From
-    12 -> SumD InsufficientCollateral <! From <! From
-    13 -> SumD ScriptsNotPaidUTxO <! From
-    14 -> SumD ExUnitsTooBigUTxO <! From
-    15 -> SumD CollateralContainsNonADA <! From
-    16 -> SumD WrongNetworkInTxBody <! From
-    17 -> SumD OutsideForecast <! From
-    18 -> SumD TooManyCollateralInputs <! From
-    19 -> SumD NoCollateralInputs
-    20 -> SumD IncorrectTotalCollateralField <! From <! From
-    21 -> SumD BabbageOutputTooSmallUTxO <! From
-    22 -> SumD BabbageNonDisjointRefInputs <! From
-    23 -> SumD PtrPresentInCollateralReturn <! From
+    9 -> SumD OutputBootAddrAttrsTooBig <! From
+    10 -> SumD OutputTooBigUTxO <! From
+    11 -> SumD InsufficientCollateral <! From <! From
+    12 -> SumD ScriptsNotPaidUTxO <! From
+    13 -> SumD ExUnitsTooBigUTxO <! From
+    14 -> SumD CollateralContainsNonADA <! From
+    15 -> SumD WrongNetworkInTxBody <! From
+    16 -> SumD OutsideForecast <! From
+    17 -> SumD TooManyCollateralInputs <! From
+    18 -> SumD NoCollateralInputs
+    19 -> SumD IncorrectTotalCollateralField <! From <! From
+    20 -> SumD BabbageOutputTooSmallUTxO <! From
+    21 -> SumD BabbageNonDisjointRefInputs <! From
+    22 -> SumD PtrPresentInCollateralReturn <! From
     n -> Invalid n
 
 -- =====================================================
@@ -428,7 +425,7 @@ conwayToDijkstraUtxoPredFailure = \case
   Conway.ValueNotConservedUTxO m -> ValueNotConservedUTxO m
   Conway.WrongNetwork x y -> WrongNetwork x y
   Conway.WrongNetworkWithdrawal x y -> WrongNetworkWithdrawal x y
-  Conway.OutputTooSmallUTxO x -> OutputTooSmallUTxO x
+  Conway.OutputTooSmallUTxO _ -> error "Impossible: `OutputTooSmallUTxO` for DijkstraUTXO"
   Conway.UtxosFailure x -> UtxosFailure x
   Conway.OutputBootAddrAttrsTooBig xs -> OutputBootAddrAttrsTooBig xs
   Conway.OutputTooBigUTxO xs -> OutputTooBigUTxO xs

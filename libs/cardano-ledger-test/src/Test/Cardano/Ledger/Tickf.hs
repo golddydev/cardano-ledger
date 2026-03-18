@@ -8,8 +8,8 @@
 --   the code that was replaced.
 module Test.Cardano.Ledger.Tickf (oldCalculatePoolDistr, calcPoolDistOldEqualsNew) where
 
-import Cardano.Ledger.BaseTypes (nonZeroOr, unNonZero)
-import Cardano.Ledger.Coin (Coin (..), knownNonZeroCoin)
+import Cardano.Ledger.BaseTypes (unNonZero)
+import Cardano.Ledger.Coin (Coin (..))
 import Cardano.Ledger.Compactible (fromCompact)
 import Cardano.Ledger.Keys (KeyHash, KeyRole (StakePool))
 import Cardano.Ledger.Shelley.Rules (calculatePoolDistr)
@@ -17,9 +17,10 @@ import Cardano.Ledger.State (
   IndividualPoolStake (..),
   PoolDistr (..),
   SnapShot (..),
-  Stake (..),
-  StakePoolParams (sppVrf),
-  sumAllStake,
+  StakePoolSnapShot (spssVrf),
+  StakeWithDelegation (..),
+  sumAllActiveStake,
+  unActiveStake,
  )
 import qualified Data.Map.Strict as Map
 import Data.Ratio ((%))
@@ -40,22 +41,21 @@ calcPoolDistOldEqualsNew =
 
 -- | The original version of calculatePoolDistr
 oldCalculatePoolDistr :: (KeyHash StakePool -> Bool) -> SnapShot -> PoolDistr
-oldCalculatePoolDistr includeHash (SnapShot stake _ delegs stakePoolParams _) =
-  let totalActiveStake = sumAllStake stake
-      nonZeroTotalActiveStake = totalActiveStake `nonZeroOr` knownNonZeroCoin @1
-      withZeroStake = VMap.toMap (unStake stake) `Map.union` (mempty <$ VMap.toMap delegs)
+oldCalculatePoolDistr includeHash (SnapShot activeStake _ stakePoolsSnapShot) =
+  let nonZeroTotalActiveStake = sumAllActiveStake activeStake
+      activeStakeMap = VMap.toMap $ unActiveStake activeStake
       sd =
         Map.fromListWith (\(cc, rat) (cc', rat') -> (cc <> cc', rat + rat')) $
           [ (d, (compactCoin, c % unCoin (unNonZero nonZeroTotalActiveStake)))
-          | (hk, compactCoin) <- Map.toAscList withZeroStake
-          , let Coin c = fromCompact compactCoin
-          , Just d <- [VMap.lookup hk delegs]
+          | StakeWithDelegation nzc d <- Map.elems activeStakeMap
+          , let compactCoin = unNonZero nzc
+                Coin c = fromCompact compactCoin
           , includeHash d
           ]
    in PoolDistr
         ( Map.intersectionWith
             (\(cc, rat) vrf -> IndividualPoolStake rat cc vrf)
             sd
-            (VMap.toMap (VMap.map sppVrf stakePoolParams))
+            (VMap.toMap (VMap.map spssVrf stakePoolsSnapShot))
         )
         nonZeroTotalActiveStake

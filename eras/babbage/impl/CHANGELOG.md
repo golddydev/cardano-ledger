@@ -1,7 +1,14 @@
 # Version history for `cardano-ledger-babbage`
 
+## 1.13.1.0
+
+* Add `validateScriptsWellFormedTxOuts`
+
 ## 1.13.0.0
 
+* Add `updateUTxOStateByTxValidity`
+* Change `babbageEvalScriptsTxInvalid` to return a `Rule` instead of `TransitionRule`
+* Change `STS` instance of `BabbageUTXOS`: use `UtxosEnv` as `Environment` and `ShelleyGovState` as `State`
 * Add `Generic` instance for `ApplyTxError`
 * Add `BabbageApplyTxError` constructor for `ApplyTxError era`
 * Renamed:

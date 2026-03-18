@@ -236,19 +236,35 @@ instance AggregateStat SnapShotStats where
       , gsKeyHashStakePool = sssDelegationStakePool <> sssPoolParams
       }
 
+countStakePoolSnapShotStats :: KeyHash StakePool -> StakePoolSnapShot -> PoolParamsStats
+countStakePoolSnapShotStats poolId StakePoolSnapShot {..} =
+  PoolParamsStats
+    { ppsPoolId = statSingleton poolId
+    , ppsAccountId = statSingleton (unAccountId spssAccountId)
+    , ppsOwners = statSet spssSelfDelegatedOwners
+    }
+
 countSnapShotStat :: SnapShot -> SnapShotStats
 countSnapShotStat SnapShot {..} =
   SnapShotStats
-    { sssStake = statMapKeys (VMap.toMap (unStake ssStake))
-    , sssDelegationCredential = statMapKeys (VMap.toMap ssDelegations)
-    , sssDelegationStakePool = statFoldable (VMap.toMap ssDelegations)
-    , sssPoolParams = statMapKeys (VMap.toMap ssPoolParams)
-    , sssPoolParamsStats = VMap.foldMap countPoolParamsStats ssPoolParams
+    { sssStake = statMapKeys activeStakeMap
+    , sssDelegationCredential = statMapKeys activeStakeMap
+    , sssDelegationStakePool = statFoldable $ Map.map swdDelegation activeStakeMap
+    , sssPoolParams = statMapKeys (VMap.toMap ssStakePoolsSnapShot)
+    , sssPoolParamsStats =
+        VMap.foldlWithKey
+          ( \acc poolId spss ->
+              acc <> countStakePoolSnapShotStats poolId spss
+          )
+          mempty
+          ssStakePoolsSnapShot
     }
+  where
+    activeStakeMap = VMap.toMap $ unActiveStake ssActiveStake
 
 data PoolParamsStats = PoolParamsStats
   { ppsPoolId :: !(Stat (KeyHash StakePool))
-  , ppsAccountAddress :: !(Stat (Credential Staking))
+  , ppsAccountId :: !(Stat (Credential Staking))
   , ppsOwners :: !(Stat (KeyHash Staking))
   }
 
@@ -267,19 +283,19 @@ instance Pretty PoolParamsStats where
     prettyRecord
       "PoolParamsStats"
       [ "PoolId" <:> ppsPoolId
-      , "AccountAddress" <:> ppsAccountAddress
+      , "AccountAddress" <:> ppsAccountId
       , "Owners" <:> ppsOwners
       ]
 
 instance AggregateStat PoolParamsStats where
   aggregateStat PoolParamsStats {..} =
-    mempty {gsCredentialStaking = ppsAccountAddress, gsKeyHashStakePool = ppsPoolId}
+    mempty {gsCredentialStaking = ppsAccountId, gsKeyHashStakePool = ppsPoolId}
 
 countPoolParamsStats :: StakePoolParams -> PoolParamsStats
 countPoolParamsStats StakePoolParams {..} =
   PoolParamsStats
     { ppsPoolId = statSingleton sppId
-    , ppsAccountAddress = statSingleton (sppAccountAddress ^. accountAddressCredentialL)
+    , ppsAccountId = statSingleton (unAccountId (aaId sppAccountAddress))
     , ppsOwners = statSet sppOwners
     }
 
@@ -491,7 +507,7 @@ countPStateStats PState {..} =
     , pssPoolParamsStats =
         foldMap
           countPoolParamsStats
-          (Map.mapWithKey (`stakePoolStateToStakePoolParams` Testnet) psStakePools)
+          (Map.mapWithKey (stakePoolStateToStakePoolParams Testnet) psStakePools)
           <> foldMap countPoolParamsStats psFutureStakePoolParams
     }
 

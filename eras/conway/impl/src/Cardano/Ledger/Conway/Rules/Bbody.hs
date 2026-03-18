@@ -48,8 +48,10 @@ import Cardano.Ledger.BaseTypes (
   ProtVer,
   Relation (..),
   ShelleyBase,
+  Version,
   natVersion,
   pvMajor,
+  succVersion,
  )
 import Cardano.Ledger.Binary (DecCBOR (..), EncCBOR (..))
 import Cardano.Ledger.Binary.Coders (Decode (..), Encode (..), decode, encode, (!>), (<!))
@@ -83,11 +85,13 @@ import Cardano.Ledger.Shelley.Rules (
 import qualified Cardano.Ledger.Shelley.Rules as Shelley (ShelleyBbodyPredFailure (..))
 import Cardano.Ledger.Shelley.UTxO (UTxO (..), txouts, unUTxO)
 import Control.DeepSeq (NFData)
+import Control.Monad (guard)
 import Control.State.Transition (
   Embed (..),
   STS (..),
   TRC (..),
   TransitionRule,
+  failOnJust,
   judgmentContext,
   (?!),
  )
@@ -110,6 +114,7 @@ data ConwayBbodyPredFailure era
     LedgersFailure (PredicateFailure (EraRule "LEDGERS" era))
   | TooManyExUnits (Mismatch RelLTEQ ExUnits)
   | BodyRefScriptsSizeTooBig (Mismatch RelLTEQ Int)
+  | HeaderProtVerTooHigh (Mismatch RelLTEQ Version)
   deriving (Generic)
 
 deriving instance
@@ -141,6 +146,7 @@ instance
       LedgersFailure x -> Sum (LedgersFailure @era) 2 !> To x
       TooManyExUnits mm -> Sum TooManyExUnits 3 !> ToGroup mm
       BodyRefScriptsSizeTooBig mm -> Sum BodyRefScriptsSizeTooBig 4 !> ToGroup mm
+      HeaderProtVerTooHigh mm -> Sum HeaderProtVerTooHigh 5 !> To mm
 
 instance
   ( Era era
@@ -154,6 +160,7 @@ instance
     2 -> SumD LedgersFailure <! From
     3 -> SumD TooManyExUnits <! FromGroup
     4 -> SumD BodyRefScriptsSizeTooBig <! FromGroup
+    5 -> SumD HeaderProtVerTooHigh <! From
     n -> Invalid n
 
 type instance EraRuleFailure "BBODY" ConwayEra = ConwayBbodyPredFailure ConwayEra
@@ -295,13 +302,27 @@ conwayBbodyTransition = do
     >>= \( TRC
              ( BbodyEnv pp _
                , state@(BbodyState ls _)
-               , Block _ txsSeq
+               , Block bhView txsSeq
                )
            ) -> do
         let utxo = utxosUtxo (lsUTxOState ls)
             txs = txsSeq ^. txSeqBlockBodyL
             totalRefScriptSize = totalRefScriptSizeInBlock (pp ^. ppProtocolVersionL) txs utxo
             maxRefScriptSizePerBlock = fromIntegral @Word32 @Int $ pp ^. ppMaxRefScriptSizePerBlockG
+            checkHeaderMajorProtVerTooHigh = do
+              let
+                curMajorVer = pvMajor (pp ^. ppProtocolVersionL)
+                headerMajorVer = pvMajor (bhviewProtVer bhView)
+              -- There is always next version higher than the current one used
+              nextMajorVer <- succVersion curMajorVer
+              -- If header version is less then or equal to the next version, then we are OK.
+              guard (headerMajorVer > nextMajorVer)
+              Just $
+                Mismatch
+                  { mismatchSupplied = headerMajorVer
+                  , mismatchExpected = nextMajorVer
+                  }
+        failOnJust checkHeaderMajorProtVerTooHigh $ injectFailure . HeaderProtVerTooHigh @era
         totalRefScriptSize
           <= maxRefScriptSizePerBlock
             ?! injectFailure

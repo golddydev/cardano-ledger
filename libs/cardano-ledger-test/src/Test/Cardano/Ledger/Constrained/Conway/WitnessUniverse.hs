@@ -30,7 +30,7 @@ import Cardano.Crypto (SigningKey)
 import Cardano.Crypto.Signing (toVerification)
 import qualified Cardano.Crypto.Signing as Byron
 import qualified Cardano.Crypto.Wallet as Byron (generate)
-import Cardano.Ledger.Address (AccountAddress, AccountId (..), BootstrapAddress (..), aaAccountId)
+import Cardano.Ledger.Address (AccountAddress (..), AccountId (..), BootstrapAddress (..))
 import Cardano.Ledger.Allegra (AllegraEra)
 import Cardano.Ledger.Allegra.Scripts (
   AllegraEraScript (..),
@@ -90,7 +90,7 @@ import Data.Typeable
 import GHC.Generics
 import Lens.Micro
 import System.IO.Unsafe (unsafePerformIO)
-import Test.Cardano.Ledger.Binary.Arbitrary (genByteString)
+import Test.Cardano.Base.Bytes (genByteString)
 import Test.Cardano.Ledger.Common (ToExpr (..))
 import Test.Cardano.Ledger.Constrained.Conway.Instances.Basic (cSJust_, prettyE)
 import Test.Cardano.Ledger.Constrained.Conway.Instances.Ledger

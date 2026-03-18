@@ -39,7 +39,6 @@ import Cardano.Ledger.Coin (
   rationalToCoinViaFloor,
   toDeltaCoin,
  )
-import Cardano.Ledger.Compactible (fromCompact)
 import Cardano.Ledger.Core
 import Cardano.Ledger.Shelley.Era (hardforkBabbageForgoRewardPrefilter)
 import Cardano.Ledger.Shelley.LedgerState.Types
@@ -70,8 +69,6 @@ import Cardano.Ledger.Shelley.Rewards (
 import Cardano.Ledger.Slot (EpochSize (..))
 import Cardano.Ledger.State
 import Cardano.Ledger.Val ((<->))
-import Control.Exception (assert)
-import Control.Monad (guard)
 import Data.Group (invert)
 import qualified Data.Map.Strict as Map
 import Data.Pulse (Pulsable (..), completeM)
@@ -100,8 +97,8 @@ startStep ::
   NonZero Word64 ->
   PulsingRewUpdate
 startStep slotsPerEpoch b@(BlocksMade b') es@(EpochState acnt ls ss nm) maxSupply asc secparam =
-  let SnapShot stake totalActiveStake delegs poolParams stakePoolSnapShots = ssStakeGo ss
-      numStakeCreds = fromIntegral (VMap.size $ unStake stake)
+  let SnapShot activeStake totalActiveStake stakePoolSnapShots = ssStakeGo ss
+      numStakeCreds = fromIntegral (VMap.size $ unActiveStake activeStake)
       k = toIntegerNonZero secparam
       -- We expect approximately 10k-many blocks to be produced each epoch.
       -- The reward calculation begins (4k/f)-many slots into the epoch,
@@ -145,18 +142,14 @@ startStep slotsPerEpoch b@(BlocksMade b') es@(EpochState acnt ls ss nm) maxSuppl
       -- We now compute stake pool specific values that are needed for computing
       -- member and leader rewards.
       totalStake = circulation es maxSupply
-      stakePerPool = sumStakePerPool delegs stake
       mkPoolRewardInfoCurry =
         mkPoolRewardInfo
           pr
           _R
           b
           (fromIntegral blocksMade)
-          stake
-          delegs
           totalStake
           totalActiveStake
-          poolParams
       -- We map over the registered stake pools to compute the relevant
       -- stake pool specific values.
       allPoolInfo = VMap.mapWithKey mkPoolRewardInfoCurry stakePoolSnapShots
@@ -182,7 +175,7 @@ startStep slotsPerEpoch b@(BlocksMade b') es@(EpochState acnt ls ss nm) maxSuppl
       newLikelihoods = VMap.map makeLikelihoods allPoolInfo
       -- We now compute the leader rewards for each stake pool.
       collectLRs acc poolRI =
-        let account = spssAccountId $ poolPs poolRI
+        let account = unAccountId $ spssAccountId $ poolPs poolRI
             packageLeaderReward = Set.singleton . leaderRewardToGeneral . poolLeaderReward
          in if hardforkBabbageForgoRewardPrefilter (pr ^. ppProtocolVersionL)
               || isAccountRegistered account accounts
@@ -205,7 +198,6 @@ startStep slotsPerEpoch b@(BlocksMade b') es@(EpochState acnt ls ss nm) maxSuppl
       -- the neccessary information to compute their individual rewards.
       free =
         FreeVars
-          delegs
           (Map.keysSet (accounts ^. accountsMapL)) -- TODO optimize. This is an expensive operation
           totalStake
           (pr ^. ppProtocolVersionL)
@@ -215,24 +207,9 @@ startStep slotsPerEpoch b@(BlocksMade b') es@(EpochState acnt ls ss nm) maxSuppl
         RSLP
           pulseSize
           free
-          (unStake stake)
+          (unActiveStake activeStake)
           (RewardAns Map.empty Map.empty)
-      newStakePerPool =
-        Map.mapMaybe
-          ( \spss ->
-              let s = fromCompact $ spssStake spss
-               in s <$ guard (s /= mempty)
-          )
-          (VMap.toMap stakePoolSnapShots)
-      showFailure =
-        error $
-          "StakePerPool does not match:\nOld StakePerPool:\n"
-            <> show stakePerPool
-            <> "\nNew StakePerPool:\n"
-            <> show newStakePerPool
-   in assert
-        (stakePerPool == newStakePerPool || showFailure)
-        (Pulsing rewsnap pulser)
+   in Pulsing rewsnap pulser
 
 -- Phase 2
 

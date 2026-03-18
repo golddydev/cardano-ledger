@@ -14,6 +14,7 @@
 -- | Golden tests that check CBOR token encoding.
 module Test.Cardano.Ledger.Shelley.Serialisation.Golden.Encoding (tests) where
 
+import Cardano.Base.IP (toIPv4)
 import Cardano.Crypto.DSIGN (SignedDSIGN)
 import qualified Cardano.Crypto.Hash as Hash
 import Cardano.Crypto.KES (SignedKES, unsoundPureSignedKES)
@@ -122,7 +123,6 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Lazy as BSL (ByteString)
 import Data.Coerce (coerce)
-import Data.IP (toIPv4)
 import qualified Data.Map.Strict as Map
 import qualified Data.Maybe as Maybe (fromJust)
 import Data.MemPack.Buffer (byteArrayFromShortByteString)
@@ -1089,10 +1089,10 @@ tests =
               , "4abc410d6a577e9441ad8ed9663931906e4d43ece8f82c712b1d0235affb06000a1903e80185a0a0"
               , "91000000190800000000001864d81e820001d81e820001d81e820001d81e82000181008202000100"
               , "91000000190800000000001864d81e820001d81e820001d81e820001d81e82000181008202000000"
-              , "810082a0a0008484a0a0a0a084a0a0a0a084a0a0a0a00082a000818300880082020082a000000000"
-              , "a0a0840185a08000820200a0a082a0a082a1581ce0a714319812c3f773ba04ec5d6b3ffcd5aad850"
-              , "06805b047b08254183820101015820c5e21ab1c9f6022d81c3b25e3436cb7f1df77f9652ae3e1310"
-              , "c28e621dd87b4c01a0"
+              , "810082a0a0008482a0a082a0a082a0a00082a000818300880082020082a000000000a0a084018480"
+              , "00820200a0a082a0a082a1581ce0a714319812c3f773ba04ec5d6b3ffcd5aad85006805b047b0825"
+              , "4183820101015820c5e21ab1c9f6022d81c3b25e3436cb7f1df77f9652ae3e1310c28e621dd87b4c"
+              , "01a0"
               ]
        in testCase "ledger state golden test" $
             unless (actual == expected) $

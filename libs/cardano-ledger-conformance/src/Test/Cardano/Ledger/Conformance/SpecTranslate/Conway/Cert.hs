@@ -196,9 +196,22 @@ instance SpecTranslate ctx SnapShot where
 
   toSpecRep (SnapShot {..}) =
     Agda.MkSnapshot
-      <$> toSpecRep ssStake
-      <*> toSpecRep (VMap.toMap ssDelegations)
-      <*> toSpecRep (VMap.toMap ssPoolParams)
+      <$> toSpecRep (Stake $ VMap.fromMap $ Map.map (unNonZero . swdStake) activeStakeMap)
+      <*> toSpecRep (Map.map swdDelegation activeStakeMap)
+      <*> toSpecRep (VMap.toMap ssStakePoolsSnapShot)
+    where
+      activeStakeMap = VMap.toMap $ unActiveStake ssActiveStake
+
+instance SpecTranslate ctx StakePoolSnapShot where
+  type SpecRep StakePoolSnapShot = Agda.StakePoolParams
+
+  toSpecRep StakePoolSnapShot {..} =
+    Agda.StakePoolParams
+      <$> toSpecRep spssSelfDelegatedOwners
+      <*> toSpecRep spssCost
+      <*> toSpecRep spssMargin
+      <*> toSpecRep spssPledge
+      <*> toSpecRep (unAccountId spssAccountId)
 
 instance SpecTranslate ctx Stake where
   type SpecRep Stake = Agda.HSMap Agda.Credential Agda.Coin

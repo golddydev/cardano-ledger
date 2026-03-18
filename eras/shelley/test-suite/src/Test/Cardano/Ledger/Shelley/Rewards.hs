@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
@@ -22,7 +23,6 @@ module Test.Cardano.Ledger.Shelley.Rewards (
   RewardUpdateOld (..),
   createRUpdOld,
   createRUpdOld_,
-  mkSnapShot,
 ) where
 
 import qualified Cardano.Crypto.DSIGN as Crypto
@@ -42,14 +42,13 @@ import Cardano.Ledger.BaseTypes (
   activeSlotVal,
   epochInfoPure,
   mkActiveSlotCoeff,
-  nonZeroOr,
+  unNonZero,
   (%?),
  )
 import Cardano.Ledger.Binary (encCBOR, hashWithEncoder, natVersion, shelleyProtVer)
 import Cardano.Ledger.Coin (
   Coin (..),
   DeltaCoin (..),
-  knownNonZeroCoin,
   rationalToCoinViaFloor,
   toDeltaCoin,
  )
@@ -104,7 +103,6 @@ import Cardano.Ledger.Slot (epochInfoSize)
 import Cardano.Ledger.Val (Val (..), invert, (<+>), (<->))
 import Cardano.Protocol.Crypto (VRF, hashVerKeyVRF)
 import Cardano.Slotting.Slot (EpochSize (..))
-import Control.DeepSeq
 import Control.Monad (replicateM)
 import Control.Monad.Trans.Reader (asks, runReader)
 import Data.Foldable as F (fold, foldl')
@@ -120,10 +118,10 @@ import qualified Data.Set as Set
 import Data.TreeDiff (ansiWlEditExprCompact, ediff)
 import qualified Data.VMap as VMap
 import Data.Word (Word64)
-import GHC.Stack
 import Lens.Micro ((&), (.~), (^.))
 import Numeric.Natural (Natural)
 import Test.Cardano.Ledger.Core.KeyPair (KeyPair (..), vKey)
+import Test.Cardano.Ledger.Core.Utils (mkActiveStake)
 import Test.Cardano.Ledger.Shelley.ConcreteCryptoTypes (MockCrypto)
 import Test.Cardano.Ledger.Shelley.Constants (defaultConstants)
 import Test.Cardano.Ledger.Shelley.Generator.Core (genCoin, genNatural)
@@ -302,10 +300,6 @@ genBlocksMade pools = BlocksMade . Map.fromList <$> mapM f pools
 
 -- Properties --
 
-toCompactCoinError :: HasCallStack => Coin -> CompactForm Coin
-toCompactCoinError c =
-  fromMaybe (error $ "Invalid Coin: " <> show c) $ toCompact c
-
 rewardsBoundedByPot ::
   forall era.
   (EraPParams era, AtMostEra "Alonzo" era) =>
@@ -340,8 +334,7 @@ rewardsBoundedByPot _ = property $ do
             rewardPot
             rewardAccounts
             stakePoolParams
-            (Stake (VMap.fromMap (toCompactCoinError <$> stake)))
-            (VMap.fromMap delegs)
+            (mkActiveStake stake delegs)
             totalLovelace
   pure $
     counterexample
@@ -378,7 +371,7 @@ rewardOnePool ::
   Coin ->
   Natural ->
   Natural ->
-  StakePoolParams ->
+  StakePoolSnapShot ->
   Stake ->
   Rational ->
   Rational ->
@@ -390,7 +383,7 @@ rewardOnePool
   r
   blocksN
   blocksTotal
-  pool
+  stakePoolSnapShot
   (Stake stake)
   sigma
   sigmaA
@@ -398,12 +391,8 @@ rewardOnePool
   addrsRew =
     rewards'
     where
-      Coin ostake =
-        Set.foldl'
-          (\c o -> maybe c (mappend c . fromCompact) $ VMap.lookup (KeyHashObj o) stake)
-          mempty
-          (sppOwners pool)
-      Coin pledge = sppPledge pool
+      Coin ostake = spssSelfDelegatedOwnersStake stakePoolSnapShot
+      Coin pledge = spssPledge stakePoolSnapShot
       pr = fromIntegral pledge % fromIntegral totalStake
       Coin maxP =
         if pledge <= ostake
@@ -418,21 +407,21 @@ rewardOnePool
           [ ( hk
             , calcStakePoolMemberReward
                 poolR
-                (sppCost pool)
-                (sppMargin pool)
+                (spssCost stakePoolSnapShot)
+                (spssMargin stakePoolSnapShot)
                 (StakeShare (unCoin (fromCompact c) % tot))
                 (StakeShare sigma)
             )
           | (hk, c) <- VMap.toAscList stake
           , notPoolOwner hk
           ]
-      notPoolOwner (KeyHashObj hk) = hk `Set.notMember` sppOwners pool
+      notPoolOwner (KeyHashObj hk) = hk `Set.notMember` spssSelfDelegatedOwners stakePoolSnapShot
       notPoolOwner (ScriptHashObj _) = True
       lReward =
         calcStakePoolOperatorReward
           poolR
-          (sppCost pool)
-          (sppMargin pool)
+          (spssCost stakePoolSnapShot)
+          (spssMargin stakePoolSnapShot)
           (StakeShare $ fromIntegral ostake % tot)
           (StakeShare sigma)
       f =
@@ -440,7 +429,7 @@ rewardOnePool
           then Map.insertWith (<>)
           else Map.insert
       potentialRewards =
-        f (unAccountId (aaAccountId $ sppAccountAddress pool)) lReward mRewards
+        f (unAccountId (spssAccountId stakePoolSnapShot)) lReward mRewards
       potentialRewards' =
         if hardforkBabbageForgoRewardPrefilter pv
           then potentialRewards
@@ -464,7 +453,7 @@ rewardOld ::
   BlocksMade ->
   Coin ->
   Set.Set (Credential Staking) ->
-  VMap.VMap VMap.VB VMap.VB (KeyHash StakePool) StakePoolParams ->
+  VMap.VMap VMap.VB VMap.VB (KeyHash StakePool) StakePoolSnapShot ->
   Stake ->
   VMap.VMap VMap.VB VMap.VB (Credential Staking) (KeyHash StakePool) ->
   Coin ->
@@ -478,7 +467,7 @@ rewardOld
   (BlocksMade b)
   r
   addrsRew
-  stakePoolParams
+  stakePoolsSnapShot
   stake
   delegs
   (Coin totalStake)
@@ -494,11 +483,11 @@ rewardOld
           )
         ]
       results = do
-        (hk, spparams) <- VMap.toAscList stakePoolParams
+        (poolId, stakePoolSnapShot) <- VMap.toAscList stakePoolsSnapShot
         let sigma = fromIntegral pstake %? fromIntegral totalStake
             sigmaA = fromIntegral pstake %? fromIntegral activeStake
-            blocksProduced = Map.lookup hk b
-            actgr = poolStake hk delegs stake
+            blocksProduced = Map.lookup poolId b
+            actgr = poolStake poolId delegs stake
             Coin pstake = sumAllStake actgr
             rewardMap = case blocksProduced of
               Nothing -> Nothing -- This is equivalent to calling rewarOnePool with n = 0
@@ -509,7 +498,7 @@ rewardOld
                     r
                     n
                     totalBlocks
-                    spparams
+                    stakePoolSnapShot
                     actgr
                     sigma
                     sigmaA
@@ -520,14 +509,14 @@ rewardOld
                 (fromMaybe 0 blocksProduced)
                 (leaderProbability asc sigma (pp ^. ppDG))
                 slotsPerEpoch
-        pure (hk, rewardMap, ls)
+        pure (poolId, rewardMap, ls)
       pv = pp ^. ppProtocolVersionL
       f =
         if hardforkAllegraAggregatedRewards pv
           then Map.unionsWith (<>)
           else Map.unions
       rewards' = f $ mapMaybe (\(_, x, _) -> x) results
-      hs = Map.fromList $ fmap (\(hk, _, l) -> (hk, l)) results
+      hs = Map.fromList $ fmap (\(poolId, _, l) -> (poolId, l)) results
 
 data RewardUpdateOld = RewardUpdateOld
   { deltaTOld :: !DeltaCoin
@@ -569,7 +558,9 @@ createRUpdOld_ ::
   ShelleyBase RewardUpdateOld
 createRUpdOld_ slotsPerEpoch b@(BlocksMade b') ss (Coin reserves) pr totalStake rs nm = do
   asc <- asks activeSlotCoeff
-  let SnapShot stake' _ delegs' poolParams _ = ssStakeGo ss
+  let SnapShot activeStake' _ stakePoolsSnapShot = ssStakeGo ss
+      stake' = Stake $ VMap.fromMap $ Map.map (unNonZero . swdStake) $ VMap.toMap $ unActiveStake activeStake'
+      delegs' = VMap.fromMap $ Map.map swdDelegation $ VMap.toMap $ unActiveStake activeStake'
       -- reserves and rewards change
       deltaR1 =
         rationalToCoinViaFloor $
@@ -594,7 +585,7 @@ createRUpdOld_ slotsPerEpoch b@(BlocksMade b') ss (Coin reserves) pr totalStake 
           b
           _R
           rs
-          poolParams
+          stakePoolsSnapShot
           stake'
           delegs'
           totalStake
@@ -758,8 +749,7 @@ mkRewardAns ::
   Coin ->
   Set (Credential Staking) ->
   VMap.VMap VMap.VB VMap.VB (KeyHash StakePool) StakePoolParams ->
-  Stake ->
-  VMap.VMap VMap.VB VMap.VB (Credential Staking) (KeyHash StakePool) ->
+  ActiveStake ->
   Coin ->
   ShelleyBase RewardAns
 mkRewardAns
@@ -768,23 +758,23 @@ mkRewardAns
   r
   addrsRew
   stakePools
-  stake
-  delegs
+  activeStake
   totalStake = completeM pulser
     where
       totalBlocks = sum b
-      totalActiveStake = sumAllStake stake `nonZeroOr` knownNonZeroCoin @1
+      totalActiveStake = sumAllActiveStake activeStake
       delegatorsPerStakePool =
         VMap.foldlWithKey
-          (\acc cred poolId -> Map.insertWith (<>) poolId (Set.singleton cred) acc)
+          (\acc cred swd -> Map.insertWith (<>) (swdDelegation swd) (Set.singleton cred) acc)
           mempty
-          delegs
+          $ unActiveStake activeStake
 
       mkPoolRewardInfo' stakePoolParams =
-        -- lehins: why is this restriction necessary? :o
-        -- ensure mkPoolRewardInfo does not use stake that doesn't belong to the pool
-        let stakeRestrictedToPool = poolStake (sppId stakePoolParams) delegs stake
-            stakePoolId = sppId stakePoolParams
+        let stakePoolId = sppId stakePoolParams
+            stakeRestrictedToPool =
+              ActiveStake $
+                VMap.filter (\_ swd -> swdDelegation swd == stakePoolId) $
+                  unActiveStake activeStake
             delegators = Map.findWithDefault mempty stakePoolId delegatorsPerStakePool
             stakePoolState = mkStakePoolState (pp ^. ppPoolDepositCompactL) delegators stakePoolParams
             stakePoolSnapShot = mkStakePoolSnapShot stakeRestrictedToPool totalActiveStake stakePoolState
@@ -793,11 +783,8 @@ mkRewardAns
               r
               (BlocksMade b)
               totalBlocks
-              stakeRestrictedToPool
-              delegs
               totalStake
               totalActiveStake
-              stakePools
               stakePoolId
               stakePoolSnapShot
       free =
@@ -806,37 +793,10 @@ mkRewardAns
           , fvTotalStake = totalStake
           , fvPoolRewardInfo =
               VMap.mapMaybe (either (const Nothing) Just . mkPoolRewardInfo') stakePools
-          , fvDelegs = delegs
           , fvProtVer = pp ^. ppProtocolVersionL
           }
       pulser :: Pulser
-      pulser = RSLP 2 free (unStake stake) (RewardAns Map.empty Map.empty)
-
--- | Adaptor that can construct new SnapShot representation from the old one
-mkSnapShot ::
-  Stake ->
-  VMap.VMap VMap.VB VMap.VB (Credential Staking) (KeyHash StakePool) ->
-  VMap.VMap VMap.VB VMap.VB (KeyHash StakePool) StakePoolParams ->
-  SnapShot
-mkSnapShot activeStake delegs stakePools =
-  SnapShot
-    { ssStake = activeStake
-    , ssTotalActiveStake = totalActiveStake
-    , ssDelegations = delegs
-    , ssPoolParams = stakePools
-    , ssStakePoolsSnapShot = force $ VMap.map snapShotFromStakePoolParams stakePools
-    }
-  where
-    snapShotFromStakePoolParams stakePoolParams =
-      let delegations = Map.findWithDefault mempty (sppId stakePoolParams) delegatorsPerStakePool
-       in mkStakePoolSnapShot activeStake totalActiveStake $
-            mkStakePoolState mempty delegations stakePoolParams
-    totalActiveStake = sumAllStake activeStake `nonZeroOr` knownNonZeroCoin @1
-    delegatorsPerStakePool =
-      VMap.foldlWithKey
-        (\acc cred poolId -> Map.insertWith (<>) poolId (Set.singleton cred) acc)
-        mempty
-        delegs
+      pulser = RSLP 2 free (unActiveStake activeStake) (RewardAns Map.empty Map.empty)
 
 -- ==================================================================
 

@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: cardano-ledger-binary
-version: 1.8.0.0
+version: 1.9.0.0
 license: Apache-2.0
 maintainer: operations@iohk.io
 author: IOHK
@@ -55,25 +55,23 @@ library
     base16-bytestring,
     binary,
     bytestring,
-    cardano-base >=0.1.1.0,
-    cardano-binary >=1.7,
-    cardano-crypto-class ^>=2.2,
-    cardano-crypto-praos >=2.2,
+    cardano-base >=0.1.2,
+    cardano-binary >=1.7.3,
+    cardano-crypto-class ^>=2.3,
+    cardano-crypto-praos >=2.2.2,
     cardano-slotting >=0.2,
     cardano-strict-containers >=0.1.2,
     cborg >=0.2.10,
     containers,
     deepseq,
     formatting,
-    iproute,
     mempack,
     microlens,
     mtl,
-    network,
     nothunks,
     plutus-ledger-api >=1.27.0,
     primitive,
-    random >=1.2,
+    random >=1.3,
     serialise,
     tagged,
     text,
@@ -105,35 +103,37 @@ library testlib
     -Wcompat
     -Wincomplete-record-updates
     -Wincomplete-uni-patterns
-    -Wredundant-constraints
     -Wunused-packages
 
+  -- ghc-9.14 gives redundant constraint warnings on some constraints
+  -- that are needed for earlier compilers.
+  if impl(ghc <9.14)
+    ghc-options:
+      -Wredundant-constraints
   build-depends:
     ImpSpec,
     QuickCheck,
+    antigen >=0.3.1.0 && <0.4,
     base,
     base16-bytestring,
     bytestring,
+    cardano-base:testlib,
     cardano-binary,
     cardano-crypto-class,
-    cardano-crypto-tests,
     cardano-ledger-binary,
     cardano-prelude-test,
-    cardano-slotting:{cardano-slotting, testlib} >=0.1.2,
+    cardano-slotting:testlib,
     cardano-strict-containers,
     cborg,
     containers,
-    cuddle >=1.1,
+    cuddle >=1.2,
     directory,
     filepath,
     formatting,
     half,
     hedgehog,
     hspec,
-    hspec-core,
-    iproute,
     pretty-show,
-    pretty-simple,
     prettyprinter,
     prettyprinter-ansi-terminal,
     primitive,
@@ -141,7 +141,7 @@ library testlib
     random >=1.2,
     text,
     tree-diff,
-    vector-map,
+    vector-map:testlib,
 
 test-suite tests
   type: exitcode-stdio-1.0
@@ -174,18 +174,18 @@ test-suite tests
     QuickCheck,
     base,
     bytestring,
-    cardano-crypto-class,
-    cardano-crypto-praos,
+    cardano-base,
+    cardano-crypto-class:{cardano-crypto-class, testlib},
+    cardano-crypto-praos:{cardano-crypto-praos, testlib},
     cardano-ledger-binary,
     cardano-prelude-test,
-    cardano-slotting,
-    cardano-strict-containers,
+    cardano-slotting:{cardano-slotting, testlib},
+    cardano-strict-containers:{cardano-strict-containers, testlib},
     cborg,
     containers,
     hedgehog,
     hedgehog-quickcheck,
     hspec,
-    iproute,
     primitive,
     tagged,
     testlib,

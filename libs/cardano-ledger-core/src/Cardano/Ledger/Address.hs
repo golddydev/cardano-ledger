@@ -22,7 +22,7 @@ module Cardano.Ledger.Address (
   getNetwork,
   AccountAddress (..),
   AccountId (..),
-  accountAddressAccountIdL,
+  accountAddressIdL,
   accountAddressCredentialL,
   accountAddressNetworkIdL,
   serialiseAccountAddress,
@@ -182,7 +182,7 @@ instance NoThunks Addr
 -- | An account based address for rewards
 data AccountAddress = AccountAddress
   { aaNetworkId :: !Network
-  , aaAccountId :: !AccountId
+  , aaId :: !AccountId
   }
   deriving (Show, Eq, Generic, Ord, NFData, ToJSONKey, FromJSONKey)
 
@@ -197,15 +197,15 @@ pattern RewardAccount {raNetwork, raCredential} = AccountAddress raNetwork (Acco
 
 {-# DEPRECATED raNetwork "In favor of `aaNetworkId`" #-}
 
-{-# DEPRECATED raCredential "In favor of `aaAccountId`" #-}
+{-# DEPRECATED raCredential "In favor of `aaId`" #-}
 
 {-# COMPLETE RewardAccount #-}
 
-accountAddressAccountIdL :: Lens' AccountAddress AccountId
-accountAddressAccountIdL = lens aaAccountId $ \x y -> x {aaAccountId = y}
+accountAddressIdL :: Lens' AccountAddress AccountId
+accountAddressIdL = lens aaId $ \x y -> x {aaId = y}
 
 accountAddressCredentialL :: Lens' AccountAddress (Credential Staking)
-accountAddressCredentialL = lens (\(AccountAddress _ (AccountId c)) -> c) $ \x y -> x {aaAccountId = AccountId y}
+accountAddressCredentialL = lens (\(AccountAddress _ (AccountId c)) -> c) $ \x y -> x {aaId = AccountId y}
 
 accountAddressNetworkIdL :: Lens' AccountAddress Network
 accountAddressNetworkIdL = lens aaNetworkId $ \x y -> x {aaNetworkId = y}
@@ -524,7 +524,7 @@ instance AddressBuffer BS.ByteString where
   {-# INLINE bufToByteString #-}
   bufGetHash :: forall h a. Hash.HashAlgorithm h => BS.ByteString -> Int -> Maybe (Hash.Hash h a)
   bufGetHash bs offset = do
-    let size = fromIntegral (Hash.sizeHash (Proxy :: Proxy h))
+    let size = fromIntegral (Hash.hashSize (Proxy :: Proxy h))
     guard (offset >= 0 && offset + size <= BS.length bs)
     Hash.hashFromBytes (BS.unsafeTake size (BS.unsafeDrop offset bs))
   {-# INLINE bufGetHash #-}
@@ -756,7 +756,7 @@ decodeHash buf = do
     Nothing -> fail "Impossible: Negative offset"
   where
     hashLen :: Int
-    hashLen = fromIntegral (Hash.sizeHash (Proxy :: Proxy h))
+    hashLen = fromIntegral (Hash.hashSize (Proxy :: Proxy h))
 {-# INLINE decodeHash #-}
 
 decodePtr ::

@@ -1,7 +1,12 @@
 # Version history for `vector-map`
 
+## 1.2.0.1
+
+*
+
 ## 1.2.0.0
 
+* Add `keysSet`
 * Add `elemAt`
 * Add `mapMaybeWithKey`
 * Add `unionWithKey`, `unionWith` and `union`
