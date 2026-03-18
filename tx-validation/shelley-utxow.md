@@ -273,7 +273,9 @@ validateMetadata pp tx =
 
 **Plain English**: "If you include metadata, you must commit to it with a hash. The hash must match. When protocol version is above (2,0), every metadatum value must respect size limits (bytestring/text ≤ 64 bytes)."
 
-**Rust implementation**: `shelley-utxow.rs` implements full metadata validation: `validate_metadata(tx, protocol_version)` performs hash consistency and, when `valid_metadata_soft_fork(protocol_version)` (pv > (2,0)), decodes each metadata value as CBOR Metadatum and runs `valid_metadatum` (bytestring/text ≤ 64 bytes, recursive for List/Map). `UtxoEnv` includes `protocol_version`; `Metadatum` enum and minimal CBOR decoder are in the same file.
+**Rust implementation**: `shelley-utxow.rs` implements metadata validation matching the Haskell approach. Metadata is stored as `HashMap<u64, Metadatum>` (decoded values, not raw CBOR bytes). The original CBOR bytes are preserved alongside for hashing (mirroring Haskell's `MemoBytes`). `validate_metadata(tx, protocol_version)` performs hash consistency and, when `valid_metadata_soft_fork(protocol_version)` (pv > (2,0)), runs `valid_metadatum` directly on decoded values (bytestring/text ≤ 64 bytes, recursive for List/Map).
+
+**Decoding vs. Validation**: In Haskell, CBOR decoding happens at deserialization time. Size constraints are NOT enforced during decoding — they are checked later by `validMetadatum`. The CBOR decoder (`Metadata.hs:124-240`) supports both definite and indefinite length encodings. A minimal CBOR decoder is included in the Rust file as a deserialization utility.
 
 #### When `InvalidMetadata` occurs (Haskell reference)
 
@@ -484,3 +486,77 @@ From the Shelley formal spec, UTXOW checks these predicates:
 **Mary** adds multi-asset support but makes **no changes to UTXOW logic** - value changes happen in UTXO, not UTXOW.
 
 Both eras completely reuse Shelley's `transitionRulesUTXOW` function.
+
+---
+
+## Auxiliary Data Across Eras
+
+Auxiliary data evolves across eras, adding new fields and validation:
+
+### Type Evolution
+
+| Era | Haskell Type | Fields | CDDL Wire Format |
+|-----|-------------|--------|-------------------|
+| **Shelley** | `ShelleyTxAuxData` | `Map Word64 Metadatum` | `{ uint => metadatum }` |
+| **Allegra** | `AllegraTxAuxData` | metadata + `StrictSeq NativeScript` | `[metadata, [native_script*]]` or raw map |
+| **Mary** | `AllegraTxAuxData` (reused) | (same as Allegra) | (same as Allegra) |
+| **Alonzo** | `AlonzoTxAuxData` | metadata + native scripts + `Map Language (NonEmpty PlutusBinary)` | `#6.259({0:metadata, 1:[native*], 2:[plutusV1*], 3:[plutusV2*], ...})` |
+| **Babbage** | `AlonzoTxAuxData` (reused) | (same as Alonzo) | (same as Alonzo) |
+| **Conway** | `AlonzoTxAuxData` (reused) | (same as Alonzo, + PlutusV3/V4) | (same as Alonzo, keys 4/5 for V3/V4) |
+
+### Validation Differences (`validateTxAuxData`)
+
+**Shelley/Allegra/Mary** `validateTxAuxData` checks only metadata:
+```haskell
+-- Shelley (TxAuxData.hs:98):
+validateTxAuxData _ (ShelleyTxAuxData m) = all validMetadatum m
+
+-- Allegra/Mary (Allegra/TxAuxData.hs:100):
+validateTxAuxData _ (AllegraTxAuxData md as) = as `deepseq` all validMetadatum md
+-- Note: native scripts forced with deepseq but NOT validated by validScript
+```
+
+**Alonzo, Babbage, Conway** add script validation:
+```haskell
+-- Alonzo/TxAuxData.hs:295-302:
+validateAlonzoTxAuxData pv auxData =
+  all validMetadatum metadata
+    && all (validScript pv) (getAlonzoTxAuxDataScripts auxData)
+```
+Where `validScript` (Alonzo/Scripts.hs:634-641):
+- **Native scripts**: forces full evaluation with `deepseq` (validates structure)
+- **Plutus scripts**: attempts deserialization via `isValidPlutusScript` (checks binary is valid)
+
+### Hashing (all eras)
+
+All eras use `MemoBytes`: the decoded value is stored alongside the original CBOR bytes. The hash is always `BLAKE2b-256(original_cbor_bytes)` via `hashAnnotated = getMemoSafeHash`.
+
+### Backward-Compatible Decoding (Alonzo)
+
+Alonzo's decoder (Alonzo/TxAuxData.hs:199-235) accepts all three wire formats:
+1. **CBOR map** (no tag) → Shelley metadata only
+2. **CBOR array** → Allegra `[metadata, scripts]`
+3. **CBOR tag 259** → Full Alonzo structure
+
+This ensures blocks from earlier eras can still be decoded.
+
+### Rust Implementation
+
+`shelley-utxow.rs` provides era-specific types and validation:
+- `AuxiliaryData` — Shelley: metadata only, `validate_shelley()`
+- `AllegraAuxiliaryData` — Allegra/Mary: metadata + native scripts, `validate_allegra()`
+- `AlonzoAuxiliaryData` — Alonzo+: metadata + native + Plutus, `validate_alonzo()`
+
+The same `validateMetadata` UTXOW rule is used in all eras; it calls the era-specific `validateTxAuxData`. When integrating Alonzo+ UTXOW, aux data must also validate scripts, not just metadata.
+
+Reference: `Alonzo/TxAuxData.hs:295-302`.
+
+---
+
+## Collateral and Failed Transaction Handling
+
+Collateral validation (phase 1) and failed-transaction handling (phase 2) are **UTXO-level rules**, not UTXOW. See the era-specific files:
+
+- **Alonzo**: `alonzo-utxo.md` — collateral validation (4 checks: vkey-locked, sufficient, ADA-only, non-empty) and `alonzoEvalScriptsTxInvalid`
+- **Babbage**: `babbage-utxo.md` — relaxed collateral (allows native tokens with return), `collAdaBalance`, `collOuts`, and `babbageEvalScriptsTxInvalid`
+- **Conway**: Reuses Babbage's collateral and failed-transaction handling

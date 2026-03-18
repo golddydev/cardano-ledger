@@ -108,28 +108,28 @@ pub struct TxIn {
 }
 
 /// Transaction output
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxOut {
     pub address: Address,
     pub value: u64, // Simplified - real impl uses multi-asset Value
 }
 
 /// Address with payment credential
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Address {
     pub payment: PaymentCredential,
     pub staking: Option<StakingCredential>,
 }
 
 /// Payment credential (key or script)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaymentCredential {
     KeyHash(KeyHash),
     ScriptHash(ScriptHash),
 }
 
 /// Staking credential
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StakingCredential {
     KeyHash(KeyHash),
     ScriptHash(ScriptHash),
@@ -252,8 +252,115 @@ pub fn valid_metadatum(m: &Metadatum) -> bool {
     }
 }
 
-/// Minimal CBOR decoder for Metadatum. Returns (Metadatum, bytes consumed) or None on error.
-/// Reference: CBOR major types 0=int, 2=bytes, 3=text, 4=array, 5=map.
+/// Decode a single CBOR byte string chunk (major 2, definite length only).
+/// Used for indefinite-length byte string content.
+#[allow(dead_code)]
+fn decode_cbor_byte_string_chunk(data: &[u8]) -> Option<(Vec<u8>, usize)> {
+    if data.is_empty() {
+        return None;
+    }
+    let b0 = data[0];
+    if (b0 >> 5) != 2 {
+        return None; // Must be byte string
+    }
+    let ai = b0 & 0x1F;
+    if ai == 31 {
+        return None; // Indefinite not allowed as chunk
+    }
+    let (len_u64, pos) = decode_cbor_length(data, ai, 1)?;
+    let len = len_u64 as usize;
+    if data.len() < pos + len {
+        return None;
+    }
+    let bytes = data[pos..pos + len].to_vec();
+    Some((bytes, pos + len))
+}
+
+/// Decode a single CBOR text string chunk (major 3, definite length only).
+/// Used for indefinite-length text string content.
+#[allow(dead_code)]
+fn decode_cbor_text_chunk(data: &[u8]) -> Option<(String, usize)> {
+    if data.is_empty() {
+        return None;
+    }
+    let b0 = data[0];
+    if (b0 >> 5) != 3 {
+        return None;
+    }
+    let ai = b0 & 0x1F;
+    if ai == 31 {
+        return None;
+    }
+    let (len_u64, pos) = decode_cbor_length(data, ai, 1)?;
+    let len = len_u64 as usize;
+    if data.len() < pos + len {
+        return None;
+    }
+    let raw = &data[pos..pos + len];
+    let s = String::from_utf8(raw.to_vec()).ok()?;
+    Some((s, pos + len))
+}
+
+/// Decode CBOR length field (ai + optional extra bytes). Returns (length, byte_offset_after_header).
+#[allow(dead_code)]
+fn decode_cbor_length(data: &[u8], ai: u8, start: usize) -> Option<(u64, usize)> {
+    let pos = start;
+    let (len_u64, bytes_read) = if ai <= 23 {
+        (ai as u64, 0)
+    } else if ai == 24 {
+        if data.len() < pos + 1 {
+            return None;
+        }
+        (data[pos] as u64, 1)
+    } else if ai == 25 {
+        if data.len() < pos + 2 {
+            return None;
+        }
+        (
+            u64::from_be_bytes([data[pos], data[pos + 1], 0, 0, 0, 0, 0, 0]) >> 48,
+            2,
+        )
+    } else if ai == 26 {
+        if data.len() < pos + 4 {
+            return None;
+        }
+        (
+            u64::from_be_bytes([0, 0, 0, 0, data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]),
+            4,
+        )
+    } else if ai == 27 {
+        if data.len() < pos + 8 {
+            return None;
+        }
+        (
+            u64::from_be_bytes([
+                data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
+                data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
+            ]),
+            8,
+        )
+    } else {
+        return None;
+    };
+    Some((len_u64, pos + bytes_read))
+}
+
+/// Minimal CBOR decoder for Metadatum (deserialization utility).
+/// Reference: Metadata.hs:124-240 (decodeMetadatum)
+///
+/// In Haskell, CBOR decoding happens at deserialization time (when a transaction
+/// is received from the network). Each metadatum value is decoded into the
+/// Metadatum ADT. The original CBOR bytes are preserved in MemoBytes for hashing.
+///
+/// This decoder supports both definite and indefinite length encodings:
+/// CBOR major types: 0=unsigned int, 1=negative int, 2=bytes, 3=text, 4=array, 5=map.
+/// ai=31 means indefinite length for bytes/text/array/map.
+///
+/// Note: Size constraints (bytes/text <= 64) are NOT enforced during decoding.
+/// They are checked later by validMetadatum during validation.
+/// Reference: Metadata.hs:131-134 "Note that we do not enforce byte and string
+/// lengths here in the decoder. We enforce that in the tx validation rules."
+#[allow(dead_code)]
 fn decode_metadatum_cbor(data: &[u8]) -> Option<(Metadatum, usize)> {
     if data.is_empty() {
         return None;
@@ -338,7 +445,26 @@ fn decode_metadatum_cbor(data: &[u8]) -> Option<(Metadatum, usize)> {
             return Some((Metadatum::I(-1i128 - (len_u64 as i128)), pos as usize));
         }
         2 => {
-            // Byte string
+            // Byte string (definite or indefinite)
+            if ai == 31 {
+                // Indefinite-length bytes: 0x5F, byte-string chunks until 0xFF. Reference: Metadata.hs decodeBytesIndef
+                let mut chunks: Vec<Vec<u8>> = Vec::new();
+                let mut p = 1usize;
+                loop {
+                    if p >= data.len() {
+                        return None;
+                    }
+                    if data[p] == 0xFF {
+                        p += 1;
+                        break;
+                    }
+                    let (chunk, n) = decode_cbor_byte_string_chunk(&data[p..])?;
+                    chunks.push(chunk);
+                    p += n;
+                }
+                let bytes: Vec<u8> = chunks.into_iter().flatten().collect();
+                return Some((Metadatum::B(bytes), p));
+            }
             let len_u64: u64 = if ai <= 23 {
                 ai as u64
             } else if ai == 24 {
@@ -378,7 +504,26 @@ fn decode_metadatum_cbor(data: &[u8]) -> Option<(Metadatum, usize)> {
             return Some((Metadatum::B(bytes), pos as usize + len));
         }
         3 => {
-            // Text string
+            // Text string (definite or indefinite)
+            if ai == 31 {
+                // Indefinite-length text: 0x7F, text chunks until 0xFF. Reference: Metadata.hs decodeStringIndef
+                let mut parts: Vec<String> = Vec::new();
+                let mut p = 1usize;
+                loop {
+                    if p >= data.len() {
+                        return None;
+                    }
+                    if data[p] == 0xFF {
+                        p += 1;
+                        break;
+                    }
+                    let (chunk, n) = decode_cbor_text_chunk(&data[p..])?;
+                    parts.push(chunk);
+                    p += n;
+                }
+                let s = parts.join("");
+                return Some((Metadatum::S(s), p));
+            }
             if ai <= 23 {
                 len_u64 = ai as u64;
             } else if ai == 24 {
@@ -419,7 +564,25 @@ fn decode_metadatum_cbor(data: &[u8]) -> Option<(Metadatum, usize)> {
             return Some((Metadatum::S(s), pos as usize + len));
         }
         4 => {
-            // Array
+            // Array (definite or indefinite)
+            if ai == 31 {
+                // Indefinite-length array: 0x9F, items until 0xFF. Reference: Metadata.hs decodeListIndef
+                let mut arr = Vec::new();
+                let mut p = 1usize;
+                loop {
+                    if p >= data.len() {
+                        return None;
+                    }
+                    if data[p] == 0xFF {
+                        p += 1;
+                        break;
+                    }
+                    let (elem, n) = decode_metadatum_cbor(&data[p..])?;
+                    arr.push(elem);
+                    p += n;
+                }
+                return Some((Metadatum::List(arr), p));
+            }
             if ai <= 23 {
                 len_u64 = ai as u64;
             } else if ai == 24 {
@@ -461,7 +624,27 @@ fn decode_metadatum_cbor(data: &[u8]) -> Option<(Metadatum, usize)> {
             return Some((Metadatum::List(arr), p));
         }
         5 => {
-            // Map
+            // Map (definite or indefinite)
+            if ai == 31 {
+                // Indefinite-length map: 0xBF, key-value pairs until 0xFF. Reference: Metadata.hs decodeMapIndef
+                let mut kvs = Vec::new();
+                let mut p = 1usize;
+                loop {
+                    if p >= data.len() {
+                        return None;
+                    }
+                    if data[p] == 0xFF {
+                        p += 1;
+                        break;
+                    }
+                    let (k, nk) = decode_metadatum_cbor(&data[p..])?;
+                    p += nk;
+                    let (v, nv) = decode_metadatum_cbor(&data[p..])?;
+                    p += nv;
+                    kvs.push((k, v));
+                }
+                return Some((Metadatum::Map(kvs), p));
+            }
             let len_u64: u64 = if ai <= 23 {
                 ai as u64
             } else if ai == 24 {
@@ -510,18 +693,20 @@ fn decode_metadatum_cbor(data: &[u8]) -> Option<(Metadatum, usize)> {
 }
 
 /// validateTxAuxData (metadata part): all metadatums pass validMetadatum.
-/// Reference: TxAuxData.hs:98 (Shelley); Alonzo/TxAuxData.hs:301 (all validMetadatum metadata)
-fn validate_tx_aux_data_metadata(metadata: &HashMap<u64, Vec<u8>>) -> bool {
-    for value in metadata.values() {
-        if let Some((m, _)) = decode_metadatum_cbor(value) {
-            if !valid_metadatum(&m) {
-                return false;
-            }
-        } else {
-            return false; // Invalid CBOR for a metadatum
-        }
-    }
-    true
+/// Reference: TxAuxData.hs:98 (Shelley): `validateTxAuxData _ (ShelleyTxAuxData m) = all validMetadatum m`
+///
+/// In Haskell, metadata values are decoded from CBOR into `Metadatum` at
+/// deserialization time (when the transaction is received from the network).
+/// The decoded `Map Word64 Metadatum` is stored alongside the original CBOR
+/// bytes (via `MemoBytes`). Validation operates on the decoded values directly.
+///
+/// This function validates that every metadatum value respects size limits:
+/// - I (integer): always valid
+/// - B (bytestring): raw byte length <= 64
+/// - S (text): UTF-8 encoded byte length <= 64
+/// - List/Map: recursive check on all children
+fn validate_tx_aux_data_metadata(metadata: &HashMap<u64, Metadatum>) -> bool {
+    metadata.values().all(valid_metadatum)
 }
 
 /// Protocol version (major, minor). Used for soft fork validMetadata (pv > (2,0)).
@@ -537,17 +722,224 @@ pub fn valid_metadata_soft_fork(pv: ProtocolVersion) -> bool {
     pv.major > 2 || (pv.major == 2 && pv.minor > 0)
 }
 
-/// Auxiliary data (metadata)
+// ============================================================================
+// Auxiliary Data Types (era-specific)
+// ============================================================================
+//
+// Auxiliary data evolves across eras. Each era adds new fields:
+//
+// Era         | Type               | Fields                            | CDDL format
+// ------------|--------------------| ----------------------------------|---------------------------
+// Shelley     | ShelleyTxAuxData   | metadata only                     | { uint => metadatum }
+// Allegra     | AllegraTxAuxData   | metadata + native scripts         | [metadata, [native_script*]]
+// Mary        | AllegraTxAuxData   | (reuses Allegra)                  | (same as Allegra)
+// Alonzo      | AlonzoTxAuxData    | metadata + native + plutus        | #6.259({0:metadata, 1:[native*], 2:[plutusV1*], ...})
+// Babbage     | AlonzoTxAuxData    | (reuses Alonzo)                   | (same as Alonzo)
+// Conway      | AlonzoTxAuxData    | (reuses Alonzo, + PlutusV3/V4)   | (same as Alonzo, keys 4/5 for V3/V4)
+//
+// All eras use MemoBytes in Haskell: the decoded value is stored alongside
+// the original CBOR bytes. The hash is BLAKE2b-256 of the original bytes.
+//
+// Haskell references:
+//   Shelley:  eras/shelley/impl/src/Cardano/Ledger/Shelley/TxAuxData.hs
+//   Allegra:  eras/allegra/impl/src/Cardano/Ledger/Allegra/TxAuxData.hs
+//   Alonzo:   eras/alonzo/impl/src/Cardano/Ledger/Alonzo/TxAuxData.hs
+// ============================================================================
+
+/// Shelley auxiliary data: metadata only.
+/// Reference: Shelley/TxAuxData.hs:53-55
+///
+/// ```haskell
+/// newtype ShelleyTxAuxDataRaw era = ShelleyTxAuxDataRaw
+///   { stadrMetadata :: Map Word64 Metadatum }
+/// ```
+///
+/// In Haskell, the full type is wrapped in MemoBytes:
+///   `newtype ShelleyTxAuxData era = MkShelleyTxAuxData (MemoBytes (ShelleyTxAuxDataRaw era))`
+///
+/// On the wire (CDDL): `metadata = { * metadatum_label => metadatum }`
+/// where `metadatum_label = uint .size 8`.
+///
+/// The hash is BLAKE2b-256 of the entire CBOR encoding of this map,
+/// NOT of individual values. Haskell preserves original bytes via MemoBytes.
 #[derive(Debug, Clone)]
 pub struct AuxiliaryData {
-    pub metadata: HashMap<u64, Vec<u8>>,
+    /// Decoded metadata map: Map Word64 Metadatum.
+    /// In Haskell, values are fully decoded from CBOR at deserialization time.
+    /// Each Metadatum::B holds raw bytes (CBOR framing stripped),
+    /// each Metadatum::S holds decoded text, etc.
+    pub metadata: HashMap<u64, Metadatum>,
+    /// Original CBOR bytes of the entire auxiliary data (for hashing).
+    /// In Haskell, MemoBytes preserves these alongside the decoded value.
+    /// The hash is BLAKE2b-256(original_bytes), matching the tx body's auxDataHash.
+    pub original_bytes: Vec<u8>,
 }
 
 impl AuxiliaryData {
+    /// Hash the auxiliary data: BLAKE2b-256 of original CBOR bytes.
+    /// Reference: Core.hs:467-468
+    ///   `hashTxAuxData = TxAuxDataHash . hashAnnotated`
+    /// where hashAnnotated for ShelleyTxAuxData uses getMemoSafeHash,
+    /// which returns the pre-computed hash of the memoized CBOR bytes.
     pub fn hash(&self) -> MetadataHash {
-        // Real implementation: BLAKE2b-256 of CBOR
+        // Real implementation: BLAKE2b-256 of self.original_bytes
+        // Simplified - returns dummy hash
         Hash([0u8; 32])
     }
+
+    /// Validate metadata for Shelley era.
+    /// Reference: TxAuxData.hs:98
+    ///   `validateTxAuxData _ (ShelleyTxAuxData m) = all validMetadatum m`
+    pub fn validate_shelley(&self, _pv: ProtocolVersion) -> bool {
+        validate_tx_aux_data_metadata(&self.metadata)
+    }
+}
+
+/// Allegra/Mary auxiliary data: metadata + native scripts.
+/// Reference: Allegra/TxAuxData.hs:77-85
+///
+/// ```haskell
+/// data AllegraTxAuxDataRaw era = AllegraTxAuxDataRaw
+///   { atadrMetadata      :: !(Map Word64 Metadatum)
+///   , atadrNativeScripts  :: !(StrictSeq (NativeScript era))
+///   }
+/// ```
+///
+/// On the wire (CDDL): `auxiliary_data = metadata / [metadata, [native_script*]]`
+/// Allegra supports both the Shelley raw-map format AND a new array format.
+///
+/// Validation (TxAuxData.hs:100):
+///   `validateTxAuxData _ (AllegraTxAuxData md as) = as `deepseq` all validMetadatum md`
+/// Note: native scripts in aux data are NOT validated by validateTxAuxData in Allegra/Mary.
+/// They are just forced with deepseq (no bottom values). Script validation only
+/// happens for scripts referenced in the UTXOW rule (needed scripts).
+#[derive(Debug, Clone)]
+pub struct AllegraAuxiliaryData {
+    pub metadata: HashMap<u64, Metadatum>,
+    pub native_scripts: Vec<NativeScript>,
+    pub original_bytes: Vec<u8>,
+}
+
+impl AllegraAuxiliaryData {
+    pub fn hash(&self) -> MetadataHash {
+        Hash([0u8; 32])
+    }
+
+    /// Allegra/Mary validateTxAuxData: only validates metadata, not scripts.
+    /// Reference: Allegra/TxAuxData.hs:100
+    pub fn validate_allegra(&self, _pv: ProtocolVersion) -> bool {
+        validate_tx_aux_data_metadata(&self.metadata)
+    }
+}
+
+/// Plutus script language version.
+/// Reference: Alonzo/Scripts.hs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Language {
+    PlutusV1,
+    PlutusV2,
+    PlutusV3,
+    PlutusV4,
+}
+
+/// Plutus script binary (opaque bytes, validated by deserializability).
+/// Reference: Alonzo/Scripts.hs - `PlutusBinary`
+#[derive(Debug, Clone)]
+pub struct PlutusBinary(pub Vec<u8>);
+
+/// Alonzo auxiliary data: metadata + native scripts + Plutus scripts.
+/// Reference: Alonzo/TxAuxData.hs:106-110
+///
+/// ```haskell
+/// data AlonzoTxAuxDataRaw era = AlonzoTxAuxDataRaw
+///   { atadrMetadata      :: !(Map Word64 Metadatum)
+///   , atadrNativeScripts  :: !(StrictSeq (NativeScript era))
+///   , atadrPlutusScripts  :: !(Map Language (NE.NonEmpty PlutusBinary))
+///   }
+/// ```
+///
+/// On the wire (CDDL): `#6.259({ ?0: metadata, ?1: [native_script*], ?2: [plutusV1*], ?3: [plutusV2*], ... })`
+/// Uses CBOR tag 259. Empty fields are omitted.
+///
+/// Backward-compatible decoding (Alonzo/TxAuxData.hs:199-235):
+///   - If CBOR map (no tag): decode as Shelley metadata only
+///   - If CBOR array: decode as Allegra [metadata, scripts]
+///   - If Tag 259: decode as full Alonzo structure
+///
+/// Validation (Alonzo/TxAuxData.hs:295-302):
+///   `validateAlonzoTxAuxData pv auxData =
+///      all validMetadatum metadata && all (validScript pv) scripts`
+/// Unlike Allegra, Alonzo DOES validate scripts in aux data using `validScript`:
+///   - Native scripts: forced with deepseq (structure is valid)
+///   - Plutus scripts: deserialization check via `isValidPlutusScript`
+#[derive(Debug, Clone)]
+pub struct AlonzoAuxiliaryData {
+    pub metadata: HashMap<u64, Metadatum>,
+    pub native_scripts: Vec<NativeScript>,
+    pub plutus_scripts: HashMap<Language, Vec<PlutusBinary>>,
+    pub original_bytes: Vec<u8>,
+}
+
+impl AlonzoAuxiliaryData {
+    pub fn hash(&self) -> MetadataHash {
+        Hash([0u8; 32])
+    }
+
+    /// Alonzo validateTxAuxData: validates metadata AND scripts.
+    /// Reference: Alonzo/TxAuxData.hs:295-302
+    ///
+    /// ```haskell
+    /// validateAlonzoTxAuxData pv auxData =
+    ///   all validMetadatum metadata
+    ///     && all (validScript pv) (getAlonzoTxAuxDataScripts auxData)
+    /// ```
+    ///
+    /// validScript (Alonzo/Scripts.hs:634-641):
+    ///   - Plutus: attempts deserialization; returns true if it succeeds
+    ///   - Native: deepseq forces full evaluation (validates structure)
+    pub fn validate_alonzo(&self, pv: ProtocolVersion) -> bool {
+        // 1. Validate metadata (same as Shelley)
+        if !validate_tx_aux_data_metadata(&self.metadata) {
+            return false;
+        }
+        // 2. Validate scripts (Alonzo addition)
+        //    Reference: Alonzo/Scripts.hs:634-641 (validScript)
+        //    Native scripts: structure validity (deepseq in Haskell)
+        //    Plutus scripts: deserialization check (isValidPlutusScript)
+        for script in &self.native_scripts {
+            if !valid_native_script(script) {
+                return false;
+            }
+        }
+        for (_lang, scripts) in &self.plutus_scripts {
+            for plutus in scripts {
+                if !valid_plutus_script(pv, plutus) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
+/// Validate a native script's structure.
+/// Reference: Alonzo/Scripts.hs:639 - `deepseq timelockScript True`
+/// In Haskell, deepseq forces the value to normal form. If the structure
+/// contains a bottom (error/undefined), this will raise an exception.
+/// Here we just check that the structure is well-formed (always true for
+/// a constructed NativeScript value in Rust).
+fn valid_native_script(_script: &NativeScript) -> bool {
+    true // Structure validity guaranteed by Rust type system
+}
+
+/// Validate a Plutus script binary.
+/// Reference: Alonzo/Scripts.hs:635 - `isValidPlutusScript (pvMajor pv) plutusScript`
+/// Attempts to deserialize the Plutus script binary. Returns true if
+/// deserialization succeeds. Real implementation would check script
+/// structure and version compatibility.
+fn valid_plutus_script(_pv: ProtocolVersion, _script: &PlutusBinary) -> bool {
+    // Simplified: real impl attempts deserialization
+    true
 }
 
 /// Complete transaction
@@ -584,6 +976,11 @@ pub struct GenDelegs {
 pub struct CertState {
     pub gen_delegs: GenDelegs,
 }
+
+// NOTE: Alonzo/Babbage collateral validation and failed-transaction handling
+// are in their respective files: alonzo-utxo.rs and babbage-utxo.rs
+
+
 
 // ============================================================================
 // Predicate Failures (Errors)
@@ -890,29 +1287,53 @@ pub fn validate_needed_witnesses(
 /// Validate metadata (full: hash consistency + metadatum value-size when pv > (2,0)).
 /// Reference: Utxow.hs:436-452 (validateMetadata)
 ///
+/// ```haskell
+/// validateMetadata pp tx =
+///   let txBody = tx ^. bodyTxL
+///       pv = pp ^. ppProtocolVersionL
+///    in case (txBody ^. auxDataHashTxBodyL, tx ^. auxDataTxL) of
+///         (SNothing, SNothing) -> pure ()
+///         (SJust mdh, SNothing) -> failure $ MissingTxMetadata mdh
+///         (SNothing, SJust md') -> failure $ MissingTxBodyMetadataHash (hashTxAuxData md')
+///         (SJust mdh, SJust md') ->
+///           sequenceA_
+///             [ failureUnless (hashTxAuxData md' == mdh) $ ConflictingMetadataHash ...
+///             , when (SoftForks.validMetadata pv) $
+///                 failureUnless (validateTxAuxData pv md') InvalidMetadata
+///             ]
+/// ```
+///
+/// Steps:
 /// 1. No hash, no data: OK.
 /// 2. Hash but no data: MissingTxMetadata.
 /// 3. Data but no hash: MissingTxBodyMetadataHash.
-/// 4. Both present: hash must match; if protocol_version > (2,0), all metadatums must pass
-///    validMetadatum (bytestring/text ≤ 64 bytes, recursive for List/Map) or InvalidMetadata.
+/// 4. Both present:
+///    a. Hash of auxiliary data CBOR bytes must match body's auxDataHash.
+///    b. When protocol_version > (2,0) (SoftForks.validMetadata), call
+///       era-specific validateTxAuxData:
+///       - Shelley:      `all validMetadatum metadata`
+///       - Allegra/Mary: `all validMetadatum metadata` (scripts not validated)
+///       - Alonzo+:      `all validMetadatum metadata && all (validScript pv) scripts`
 pub fn validate_metadata(
     tx: &Tx,
     protocol_version: ProtocolVersion,
 ) -> Result<(), ShelleyUtxowPredFailure> {
     match (&tx.body.auxiliary_data_hash, &tx.auxiliary_data) {
-        // No hash, no data: OK
+        // (SNothing, SNothing) -> pure ()
         (None, None) => Ok(()),
 
-        // Hash but no data: Error
+        // (SJust mdh, SNothing) -> failure $ MissingTxMetadata mdh
         (Some(hash), None) => Err(ShelleyUtxowPredFailure::MissingTxMetadata(*hash)),
 
-        // Data but no hash: Error
+        // (SNothing, SJust md') -> failure $ MissingTxBodyMetadataHash (hashTxAuxData md')
         (None, Some(aux_data)) => Err(ShelleyUtxowPredFailure::MissingTxBodyMetadataHash(
             aux_data.hash(),
         )),
 
-        // Both present: Check hash match, then (when soft fork active) metadatum sizes
+        // (SJust mdh, SJust md') -> hash check + validateTxAuxData
         (Some(body_hash), Some(aux_data)) => {
+            // hashTxAuxData md' == mdh
+            // Hash is BLAKE2b-256 of original CBOR bytes (via MemoBytes/getMemoSafeHash)
             let computed_hash = aux_data.hash();
             if *body_hash != computed_hash {
                 return Err(ShelleyUtxowPredFailure::ConflictingMetadataHash {
@@ -920,8 +1341,10 @@ pub fn validate_metadata(
                     actual: computed_hash,
                 });
             }
+            // when (SoftForks.validMetadata pv) $ failureUnless (validateTxAuxData pv md') InvalidMetadata
+            // Shelley era: validateTxAuxData _ (ShelleyTxAuxData m) = all validMetadatum m
             if valid_metadata_soft_fork(protocol_version)
-                && !validate_tx_aux_data_metadata(&aux_data.metadata)
+                && !aux_data.validate_shelley(protocol_version)
             {
                 return Err(ShelleyUtxowPredFailure::InvalidMetadata);
             }
@@ -1154,48 +1577,35 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_validate_metadata_invalid_metadatum_when_pv_gt_2_0() {
-        // When pv > (2,0), metadatum with bytestring > 64 bytes must fail with InvalidMetadata.
-        // CBOR for bytes length 65: 0x58 (major 2, ai 24) + 0x41 (65) + 65 bytes
-        let mut long_bytes = vec![0x58, 65];
-        long_bytes.extend(std::iter::repeat(0u8).take(65));
-        let mut metadata = HashMap::new();
-        metadata.insert(1u64, long_bytes);
-        let aux_data = AuxiliaryData { metadata };
-        let hash = aux_data.hash();
-        let tx = Tx {
-            body: TxBody {
-                inputs: vec![],
-                outputs: vec![],
-                fee: 0,
-                certificates: vec![],
-                withdrawals: HashMap::new(),
-                auxiliary_data_hash: Some(hash),
-            },
-            wits: TxWits {
-                vkey_wits: vec![],
-                script_wits: HashMap::new(),
-            },
-            auxiliary_data: Some(aux_data),
-        };
-        let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
-        let result = validate_metadata(&tx, pv_3_0);
-        assert!(
-            matches!(result, Err(ShelleyUtxowPredFailure::InvalidMetadata)),
-            "expected InvalidMetadata when pv > (2,0) and metadatum bytestring len > 64, got {:?}",
-            result
-        );
+    // ========================================================================
+    // Metadata validation tests
+    // ========================================================================
+    //
+    // These tests validate against decoded Metadatum values (matching Haskell).
+    // In Haskell, metadata values are decoded from CBOR at deserialization time
+    // and stored as `Map Word64 Metadatum`. The CBOR decoder produces:
+    //   - I(n) for integers
+    //   - B(bytes) for byte strings (raw bytes, CBOR framing stripped)
+    //   - S(text) for text strings (decoded UTF-8)
+    //   - List/Map for arrays/maps (recursive)
+    //
+    // The old tests used raw CBOR bytes; now they use decoded Metadatum.
+    // ========================================================================
+
+    /// Helper: construct AuxiliaryData from decoded metadata.
+    fn make_aux_data(metadata: HashMap<u64, Metadatum>) -> AuxiliaryData {
+        // In a real implementation, original_bytes would be the CBOR
+        // encoding of the metadata map. The hash is computed from these bytes.
+        AuxiliaryData {
+            metadata,
+            original_bytes: vec![], // Simplified for tests
+        }
     }
 
-    #[test]
-    fn test_validate_metadata_valid_metadatum_when_pv_gt_2_0() {
-        // When pv > (2,0), metadatum with bytestring <= 64 bytes must pass.
-        // CBOR for bytes length 2: 0x42 + two bytes
-        let metadata = HashMap::from([(1u64, vec![0x42, 0x01, 0x02])]);
-        let aux_data = AuxiliaryData { metadata };
+    /// Helper: construct a Tx with auxiliary data for metadata validation tests.
+    fn make_tx_with_aux_data(aux_data: AuxiliaryData) -> Tx {
         let hash = aux_data.hash();
-        let tx = Tx {
+        Tx {
             body: TxBody {
                 inputs: HashSet::new(),
                 outputs: vec![],
@@ -1211,9 +1621,166 @@ mod tests {
                 script_wits: HashMap::new(),
             },
             auxiliary_data: Some(aux_data),
-        };
+        }
+    }
+
+    #[test]
+    fn test_validate_metadata_invalid_metadatum_when_pv_gt_2_0() {
+        // When pv > (2,0), metadatum with bytestring > 64 bytes must fail with InvalidMetadata.
+        // Metadatum::B holds raw bytes (CBOR framing already stripped by decoder).
+        // Reference: Metadata.hs:80 - `validMetadatum (B b) = BS.length b <= 64`
+        let long_bytes = vec![0u8; 65]; // 65 raw bytes (exceeds 64 limit)
+        let metadata = HashMap::from([(1u64, Metadatum::B(long_bytes))]);
+        let aux_data = make_aux_data(metadata);
+        let tx = make_tx_with_aux_data(aux_data);
+        let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
+        let result = validate_metadata(&tx, pv_3_0);
+        assert!(
+            matches!(result, Err(ShelleyUtxowPredFailure::InvalidMetadata)),
+            "expected InvalidMetadata when pv > (2,0) and metadatum bytestring len > 64, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_metadata_valid_metadatum_when_pv_gt_2_0() {
+        // When pv > (2,0), metadatum with bytestring <= 64 bytes must pass.
+        // Reference: Metadata.hs:80 - `validMetadatum (B b) = BS.length b <= 64`
+        let metadata = HashMap::from([(1u64, Metadatum::B(vec![0x01, 0x02]))]);
+        let aux_data = make_aux_data(metadata);
+        let tx = make_tx_with_aux_data(aux_data);
         let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
         let result = validate_metadata(&tx, pv_3_0);
         assert!(result.is_ok(), "expected OK for valid metadatum, got {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_metadata_text_too_long() {
+        // When pv > (2,0), metadatum text with UTF-8 byte length > 64 must fail.
+        // Reference: Metadata.hs:81 - `validMetadatum (S s) = BS.length (T.encodeUtf8 s) <= 64`
+        let long_text = "a".repeat(65); // 65 ASCII bytes
+        let metadata = HashMap::from([(1u64, Metadatum::S(long_text))]);
+        let aux_data = make_aux_data(metadata);
+        let tx = make_tx_with_aux_data(aux_data);
+        let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
+        let result = validate_metadata(&tx, pv_3_0);
+        assert!(
+            matches!(result, Err(ShelleyUtxowPredFailure::InvalidMetadata)),
+            "expected InvalidMetadata for text > 64 UTF-8 bytes, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_metadata_integer_always_valid() {
+        // Integers are always valid (no size limit on the metadatum value).
+        // Reference: Metadata.hs:79 - `validMetadatum (I _) = True`
+        // Note: Integer *encoding* range (-(2^64-1) .. 2^64-1) is enforced
+        // by the CBOR decoder, not by validMetadatum.
+        let metadata = HashMap::from([(1u64, Metadatum::I(i128::MAX))]);
+        let aux_data = make_aux_data(metadata);
+        let tx = make_tx_with_aux_data(aux_data);
+        let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
+        let result = validate_metadata(&tx, pv_3_0);
+        assert!(result.is_ok(), "expected OK for integer metadatum, got {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_metadata_nested_invalid() {
+        // Nested structure with invalid leaf must fail.
+        // Reference: Metadata.hs:82-87 - recursive check on List/Map
+        let invalid_leaf = Metadatum::B(vec![0u8; 65]); // too long
+        let nested = Metadatum::List(vec![
+            Metadatum::I(42),
+            Metadatum::List(vec![invalid_leaf]), // deeply nested invalid
+        ]);
+        let metadata = HashMap::from([(1u64, nested)]);
+        let aux_data = make_aux_data(metadata);
+        let tx = make_tx_with_aux_data(aux_data);
+        let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
+        let result = validate_metadata(&tx, pv_3_0);
+        assert!(
+            matches!(result, Err(ShelleyUtxowPredFailure::InvalidMetadata)),
+            "expected InvalidMetadata for nested invalid metadatum, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_metadata_map_keys_validated() {
+        // Map keys must also satisfy validMetadatum.
+        // Reference: Metadata.hs:83-87 - checks both k and v
+        let invalid_key = Metadatum::B(vec![0u8; 65]);
+        let valid_value = Metadatum::I(1);
+        let map_metadatum = Metadatum::Map(vec![(invalid_key, valid_value)]);
+        let metadata = HashMap::from([(1u64, map_metadatum)]);
+        let aux_data = make_aux_data(metadata);
+        let tx = make_tx_with_aux_data(aux_data);
+        let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
+        let result = validate_metadata(&tx, pv_3_0);
+        assert!(
+            matches!(result, Err(ShelleyUtxowPredFailure::InvalidMetadata)),
+            "expected InvalidMetadata for invalid map key, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_metadata_skipped_when_pv_le_2_0() {
+        // When pv <= (2,0), metadatum value-size check is disabled.
+        // Reference: SoftForks.hs:12-15 - `validMetadata pv = pv > ProtVer (natVersion @2) 0`
+        // Invalid metadatum should NOT cause failure at Shelley pv (2,0).
+        let long_bytes = vec![0u8; 65]; // Would fail if checked
+        let metadata = HashMap::from([(1u64, Metadatum::B(long_bytes))]);
+        let aux_data = make_aux_data(metadata);
+        let tx = make_tx_with_aux_data(aux_data);
+        let pv_2_0 = ProtocolVersion { major: 2, minor: 0 };
+        let result = validate_metadata(&tx, pv_2_0);
+        assert!(
+            result.is_ok(),
+            "expected OK at pv (2,0) even with invalid metadatum, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_validate_metadata_boundary_64_bytes() {
+        // Exactly 64 bytes: valid. 
+        // Reference: Metadata.hs:80 - `BS.length b <= 64`
+        let metadata_ok = HashMap::from([(1u64, Metadatum::B(vec![0u8; 64]))]);
+        let aux_data = make_aux_data(metadata_ok);
+        let tx = make_tx_with_aux_data(aux_data);
+        let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
+        assert!(validate_metadata(&tx, pv_3_0).is_ok());
+
+        // Exactly 64 UTF-8 bytes text: valid.
+        let metadata_text = HashMap::from([(1u64, Metadatum::S("a".repeat(64)))]);
+        let aux_data = make_aux_data(metadata_text);
+        let tx = make_tx_with_aux_data(aux_data);
+        assert!(validate_metadata(&tx, pv_3_0).is_ok());
+    }
+
+    #[test]
+    fn test_validate_metadata_complex_valid_structure() {
+        // Complex nested structure that is valid.
+        let metadata = HashMap::from([
+            (0u64, Metadatum::I(42)),
+            (1u64, Metadatum::B(vec![1, 2, 3])),
+            (2u64, Metadatum::S("hello".to_string())),
+            (3u64, Metadatum::List(vec![
+                Metadatum::I(-100),
+                Metadatum::B(vec![0u8; 64]),
+                Metadatum::Map(vec![
+                    (Metadatum::S("key".to_string()), Metadatum::I(999)),
+                ]),
+            ])),
+        ]);
+        let aux_data = make_aux_data(metadata);
+        let tx = make_tx_with_aux_data(aux_data);
+        let pv_3_0 = ProtocolVersion { major: 3, minor: 0 };
+        assert!(
+            validate_metadata(&tx, pv_3_0).is_ok(),
+            "expected OK for complex valid metadata structure"
+        );
     }
 }

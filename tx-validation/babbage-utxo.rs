@@ -804,6 +804,157 @@ pub struct BabbageUTxOState {
 }
 
 // ============================================================================
+// Failed Transaction Handling (Phase 2 Script Failure - UTXOS rule)
+// Reference: eras/babbage/impl/src/Cardano/Ledger/Babbage/Rules/Utxos.hs:248-303
+//
+// Babbage improves on Alonzo by introducing a collateral return output.
+// When scripts fail, the collateral inputs are seized, but the return output
+// is produced — returning excess ADA and all native tokens to the user.
+//
+// Conway reuses Babbage's babbageEvalScriptsTxInvalid.
+// ============================================================================
+
+/// Compute the net collateral ADA balance (inputs minus return).
+///
+/// If no collateral return: net = sum of all collateral input ADA
+/// If collateral return present: net = sum of inputs - return coin value
+///
+/// Reference: Babbage/Collateral.hs:30-41 (collAdaBalance)
+///
+/// ```haskell
+/// collAdaBalance txBody utxoCollateral = toDeltaCoin $
+///   case txBody ^. collateralReturnTxBodyL of
+///     SNothing -> colbal
+///     SJust txOut -> colbal <-> (txOut ^. coinTxOutL)
+///   where
+///     colbal = sumAllCoin utxoCollateral
+/// ```
+pub fn coll_ada_balance(
+    collateral_utxo: &HashMap<TxIn, BabbageTxOut>,
+    collateral_return: Option<&BabbageTxOut>,
+) -> i64 {
+    let col_bal: Coin = collateral_utxo.values().map(|out| out.value.coin).sum();
+    match collateral_return {
+        None => col_bal as i64,
+        Some(ret) => (col_bal as i64) - (ret.value.coin as i64),
+    }
+}
+
+/// Compute the collateral return output's TxIn (if it exists).
+///
+/// The return output gets index = len(regular outputs), i.e. one past the
+/// last regular output index.
+///
+/// Reference: Babbage/Collateral.hs:52-60 (mkCollateralTxIn)
+///
+/// ```haskell
+/// mkCollateralTxIn txBody = TxIn (txIdTxBody txBody) txIx
+///   where txIx = txIxFromIntegral (length (txBody ^. outputsTxBodyL))
+/// ```
+pub fn mk_collateral_txin(tx_id: [u8; 32], num_regular_outputs: usize) -> TxIn {
+    TxIn {
+        tx_id,
+        output_index: num_regular_outputs as u32,
+    }
+}
+
+/// Compute the collateral return UTxO entries (if collateral return is present).
+///
+/// Reference: Babbage/Collateral.hs:43-50 (collOuts)
+///
+/// ```haskell
+/// collOuts txBody =
+///   case txBody ^. collateralReturnTxBodyL of
+///     SNothing -> UTxO Map.empty
+///     SJust txOut -> UTxO (Map.singleton (mkCollateralTxIn txBody) txOut)
+/// ```
+pub fn coll_outs(
+    tx_id: [u8; 32],
+    num_regular_outputs: usize,
+    collateral_return: Option<&BabbageTxOut>,
+) -> HashMap<TxIn, BabbageTxOut> {
+    match collateral_return {
+        None => HashMap::new(),
+        Some(ret) => {
+            let txin = mk_collateral_txin(tx_id, num_regular_outputs);
+            let mut m = HashMap::new();
+            m.insert(txin, ret.clone());
+            m
+        }
+    }
+}
+
+/// Babbage/Conway: process a failed (phase-2 invalid) transaction.
+///
+/// When a transaction's Plutus scripts fail, the ledger:
+/// 1. Removes all collateral inputs from the UTxO
+/// 2. Adds the collateral return output to the UTxO (if present)
+/// 3. Adds the net collateral (inputs - return) to the fee pot
+///
+/// ```text
+/// utxoKeep = collateralInputs ⋪ utxo
+/// utxoDel  = collateralInputs ◁ utxo
+/// collouts = collOuts txBody              -- collateral return output (if any)
+/// new_utxo = utxoKeep ∪ collouts
+/// new_fees = fees + collAdaBalance(txBody, utxoDel)
+/// ```
+///
+/// Reference: Babbage/Rules/Utxos.hs:265-303 (babbageEvalScriptsTxInvalid)
+///
+/// ```haskell
+/// babbageEvalScriptsTxInvalid = do
+///   TRC (UtxoEnv _ pp _, utxos@(UTxOState utxo _ fees _ _ _), tx) <- judgmentContext
+///   let txBody = tx ^. bodyTxL
+///   let !(utxoKeep, utxoDel) = extractKeys (unUTxO utxo) (txBody ^. collateralInputsTxBodyL)
+///       UTxO collouts = collOuts txBody
+///       DeltaCoin collateralFees = collAdaBalance txBody utxoDel
+///   pure $!
+///     utxos
+///       { utxosUtxo = UTxO (Map.union utxoKeep collouts)
+///       , utxosFees = fees <> Coin collateralFees
+///       }
+/// ```
+///
+/// | What       | How                                                 |
+/// |------------|-----------------------------------------------------|
+/// | Consumed   | All collateral inputs removed from UTxO              |
+/// | Produced   | Collateral return output added to UTxO (if present)  |
+/// | Fees       | fees + collAdaBalance (net collateral only)           |
+pub fn babbage_apply_failed_tx(
+    state: &BabbageUTxOState,
+    tx_body: &BabbageTxBody,
+    tx_id: [u8; 32],
+) -> BabbageUTxOState {
+    // Remove collateral inputs from UTxO
+    let mut utxo_keep = state.utxo.utxo.clone();
+    let mut utxo_del: HashMap<TxIn, BabbageTxOut> = HashMap::new();
+    for txin in &tx_body.collateral_inputs {
+        if let Some(txout) = utxo_keep.remove(txin) {
+            utxo_del.insert(txin.clone(), txout);
+        }
+    }
+
+    // Compute net collateral fees (inputs minus return)
+    let collateral_fees = coll_ada_balance(&utxo_del, tx_body.collateral_return.as_ref());
+
+    // Compute collateral return outputs
+    let collouts = coll_outs(
+        tx_id,
+        tx_body.outputs.len(),
+        tx_body.collateral_return.as_ref(),
+    );
+
+    // Add collateral return to UTxO
+    utxo_keep.extend(collouts);
+
+    BabbageUTxOState {
+        utxo: BabbageUTxO { utxo: utxo_keep },
+        deposited: state.deposited,
+        fees: state.fees + (collateral_fees.max(0) as Coin),
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

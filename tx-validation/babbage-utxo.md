@@ -538,4 +538,102 @@ Benefits:
 - Protection against wallet bugs
 - Clear user expectation
 
+---
+
+## Failed Transaction Handling (Phase 2 Script Failure)
+
+**Reference**: `eras/babbage/impl/src/Cardano/Ledger/Babbage/Rules/Utxos.hs:248-303`
+
+Babbage improves on Alonzo's failed-transaction handling with the **collateral return output**. Conway reuses Babbage's `babbageEvalScriptsTxInvalid`.
+
+### Babbage/Conway: `babbageEvalScriptsTxInvalid`
+
+```haskell
+-- Reference: Babbage/Rules/Utxos.hs:265-303
+babbageEvalScriptsTxInvalid = do
+  TRC (UtxoEnv _ pp _, utxos@(UTxOState utxo _ fees _ _ _), tx) <- judgmentContext
+  let txBody = tx ^. bodyTxL
+
+  -- ... script validation confirms scripts do fail ...
+
+  let !(utxoKeep, utxoDel) = extractKeys (unUTxO utxo) (txBody ^. collateralInputsTxBodyL)
+      UTxO collouts = collOuts txBody
+      DeltaCoin collateralFees = collAdaBalance txBody utxoDel
+  pure $!
+    utxos
+      { utxosUtxo = UTxO (Map.union utxoKeep collouts)   -- Produced: collateral return
+      , utxosFees = fees <> Coin collateralFees           -- Fees: net collateral only
+      }
+```
+
+### UTxO State Changes
+
+| What | How |
+|------|-----|
+| **Consumed** | All collateral inputs removed from UTxO |
+| **Produced** | Collateral return output added to UTxO (if present) |
+| **Fees** | `fees + collAdaBalance(txBody, collateral)` — only **net** collateral (inputs − return) |
+
+### `collAdaBalance` — Net Collateral Computation
+
+**Reference**: `Babbage/Collateral.hs:30-41`
+
+```haskell
+collAdaBalance txBody utxoCollateral = toDeltaCoin $
+  case txBody ^. collateralReturnTxBodyL of
+    SNothing -> colbal
+    SJust txOut -> colbal <-> (txOut ^. coinTxOutL)
+  where
+    colbal = sumAllCoin utxoCollateral
+```
+
+- If no collateral return: net = all collateral ADA
+- If collateral return present: net = collateral ADA − return ADA
+
+### `collOuts` — Collateral Return Output
+
+**Reference**: `Babbage/Collateral.hs:43-50`
+
+```haskell
+collOuts txBody =
+  case txBody ^. collateralReturnTxBodyL of
+    SNothing -> UTxO Map.empty
+    SJust txOut -> UTxO (Map.singleton (mkCollateralTxIn txBody) txOut)
+
+mkCollateralTxIn txBody = TxIn (txIdTxBody txBody) txIx
+  where txIx = txIxFromIntegral (length (txBody ^. outputsTxBodyL))
+```
+
+The collateral return output gets a TxIn index of `len(regular_outputs)` — one past the last regular output.
+
+### Comparison: Alonzo vs Babbage Failed Transaction
+
+| Aspect | Alonzo | Babbage/Conway |
+|--------|--------|----------------|
+| Consumed | Collateral inputs | Collateral inputs |
+| Produced | Nothing | Collateral return output |
+| Fees | `fees + sum(collateral ADA)` | `fees + (sum(collateral ADA) - return ADA)` |
+| Native tokens | Lost/burned | Returned via collateral return |
+| User loss | Entire collateral UTxOs | Only net collateral ADA |
+
+### Summary of UTxO State Changes
+
+```
+VALID TRANSACTION (all eras):
+  new_utxo = (utxo \ inputs) ∪ outputs
+  new_fees = fees + txfee
+
+FAILED TRANSACTION (Alonzo):
+  new_utxo = utxo \ collateral_inputs
+  new_fees = fees + sum_coin(collateral_inputs)
+
+FAILED TRANSACTION (Babbage/Conway):
+  new_utxo = (utxo \ collateral_inputs) ∪ collateral_return
+  new_fees = fees + (sum_coin(collateral_inputs) - coin(collateral_return))
+```
+
+### Value Conservation Not Checked
+
+`validateValueNotConservedUTxO` runs only in the UTXO phase-1 rule for **valid** transactions. Failed transactions bypass this entirely — the UTXOS rule directly manipulates the UTxO state without checking value conservation.
+
 See `conway-utxo.md` for governance-era changes.

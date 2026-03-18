@@ -675,4 +675,72 @@ data AlonzoUtxoPredFailure era
 | Validity | Just time | + must translate to UTC |
 | Phase 2 | N/A | UTXOS sub-rule |
 
-See `babbage-utxo.md` for reference inputs and collateral return.
+---
+
+## Failed Transaction Handling (Phase 2 Script Failure)
+
+**Reference**: `eras/alonzo/impl/src/Cardano/Ledger/Alonzo/Rules/Utxos.hs:281-315`
+
+When phase-2 scripts fail (or `IsValid = False` and scripts indeed fail), the normal transaction
+effects do **not** occur. Instead, only collateral is processed.
+
+### What does NOT happen for failed transactions
+
+- Regular inputs are NOT consumed
+- Regular outputs are NOT produced
+- Certificates are NOT processed
+- Withdrawals are NOT applied
+- **`ValueNotConservedUTxO` is NOT checked** (value conservation only applies to valid transactions in the UTXO phase-1 rule)
+
+### Alonzo: `alonzoEvalScriptsTxInvalid`
+
+```haskell
+-- Reference: Alonzo/Rules/Utxos.hs:291-315
+alonzoEvalScriptsTxInvalid = do
+  TRC (UtxoEnv slot pp _, utxos@(UTxOState utxo _ fees _ _ _), tx) <- judgmentContext
+  let txBody = tx ^. bodyTxL
+
+  -- ... script validation confirms scripts do fail ...
+
+  {- utxoKeep = txBody ^. collateralInputsTxBodyL ⋪ utxo -}
+  {- utxoDel  = txBody ^. collateralInputsTxBodyL ◁ utxo -}
+  let !(utxoKeep, utxoDel) = extractKeys (unUTxO utxo) (txBody ^. collateralInputsTxBodyL)
+  pure $!
+    utxos
+      { utxosUtxo = UTxO utxoKeep
+      , utxosFees = fees <> sumAllCoin utxoDel
+      }
+```
+
+### UTxO State Changes
+
+| What | How |
+|------|-----|
+| **Consumed** | All collateral inputs removed from UTxO |
+| **Produced** | Nothing |
+| **Fees** | `fees + sumAllCoin(collateral inputs)` — ALL collateral ADA goes to fees |
+
+### Summary
+
+```
+VALID TRANSACTION:
+  new_utxo = (utxo \ inputs) ∪ outputs
+  new_fees = fees + txfee
+
+FAILED TRANSACTION (Alonzo):
+  new_utxo = utxo \ collateral_inputs
+  new_fees = fees + sum_coin(collateral_inputs)
+```
+
+### Value Conservation: Valid vs Failed
+
+| | Valid Transaction | Failed Transaction |
+|-|-------------------|--------------------|
+| **Value conservation checked?** | Yes (`consumed == produced`) | **No** |
+| **Consumed** | All regular inputs | Only collateral inputs |
+| **Produced** | All regular outputs | Nothing |
+| **Fees** | Transaction fee field | All collateral ADA |
+| **Certificates** | Processed | Ignored |
+| **Withdrawals** | Applied | Ignored |
+
+See `babbage-utxo.md` for collateral return and reference inputs.

@@ -1228,6 +1228,68 @@ pub fn alonzo_utxo_transition(
 }
 
 // ============================================================================
+// Failed Transaction Handling (Phase 2 Script Failure - UTXOS rule)
+// Reference: eras/alonzo/impl/src/Cardano/Ledger/Alonzo/Rules/Utxos.hs:281-315
+//
+// When IsValid = False (phase-2 scripts fail):
+// - Normal tx inputs are NOT consumed
+// - Normal tx outputs are NOT produced
+// - Certificates, withdrawals are NOT processed
+// - Value conservation (consumed == produced) is NOT checked
+// - ONLY collateral is affected
+// ============================================================================
+
+/// Alonzo: process a failed (phase-2 invalid) transaction.
+///
+/// When a transaction's Plutus scripts fail (or tx declares `is_valid = false`
+/// and scripts indeed fail), the ledger applies a "penalty" by seizing collateral.
+///
+/// ```text
+/// utxoKeep = collateralInputs ⋪ utxo     -- remove collateral from UTxO
+/// utxoDel  = collateralInputs ◁ utxo      -- the collateral entries being seized
+/// new_utxo = utxoKeep                     -- nothing new is added
+/// new_fees = fees + sumAllCoin(utxoDel)   -- ALL collateral ADA goes to fee pot
+/// ```
+///
+/// Reference: Alonzo/Rules/Utxos.hs:291-315 (alonzoEvalScriptsTxInvalid)
+///
+/// ```haskell
+/// alonzoEvalScriptsTxInvalid = do
+///   TRC (UtxoEnv slot pp _, utxos@(UTxOState utxo _ fees _ _ _), tx) <- judgmentContext
+///   let txBody = tx ^. bodyTxL
+///   let !(utxoKeep, utxoDel) = extractKeys (unUTxO utxo) (txBody ^. collateralInputsTxBodyL)
+///   pure $!
+///     utxos
+///       { utxosUtxo = UTxO utxoKeep
+///       , utxosFees = fees <> sumAllCoin utxoDel
+///       }
+/// ```
+///
+/// | What       | How                                           |
+/// |------------|-----------------------------------------------|
+/// | Consumed   | All collateral inputs removed from UTxO       |
+/// | Produced   | Nothing                                       |
+/// | Fees       | fees + sumAllCoin(collateral inputs)           |
+pub fn alonzo_apply_failed_tx(
+    state: &AlonzoUTxOState,
+    collateral_inputs: &HashSet<TxIn>,
+) -> AlonzoUTxOState {
+    // Partition UTxO: keep everything except collateral, seize collateral
+    let mut utxo_keep = state.utxo.utxo.clone();
+    let mut collateral_coin: Coin = 0;
+    for txin in collateral_inputs {
+        if let Some(txout) = utxo_keep.remove(txin) {
+            collateral_coin += txout.value.coin;
+        }
+    }
+    AlonzoUTxOState {
+        utxo: AlonzoUTxO { utxo: utxo_keep },
+        deposited: state.deposited,
+        fees: state.fees + collateral_coin,
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

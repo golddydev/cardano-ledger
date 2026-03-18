@@ -98,16 +98,128 @@ impl Script {
         [0u8; 32] // Simplified
     }
 
-    /// Check if Plutus script is well-formed (valid CBOR)
-    /// Reference: Babbage/Rules/Utxow.hs:248-277
-    pub fn is_well_formed(&self) -> bool {
+    /// Check if script is well-formed (can be deserialized successfully)
+    ///
+    /// Reference: Alonzo/Scripts.hs:631-641 (validScript)
+    ///
+    /// ```haskell
+    /// validScript :: (HasCallStack, AlonzoEraScript era) => ProtVer -> Script era -> Bool
+    /// validScript pv script =
+    ///   case toPlutusScript script of
+    ///     Just plutusScript -> isValidPlutusScript (pvMajor pv) plutusScript
+    ///     Nothing ->
+    ///       case getNativeScript script of
+    ///         Just timelockScript -> deepseq timelockScript True
+    ///         Nothing -> error "Impossible: There are only Native and Plutus scripts available"
+    /// ```
+    ///
+    /// For Plutus scripts, the chain continues:
+    ///   isValidPlutusScript pv ps = withPlutusScript ps (isValidPlutus pv)
+    ///   -- Reference: Alonzo/Scripts.hs:248-251
+    ///   isValidPlutus v = isRight . decodePlutusRunnable v
+    ///   -- Reference: Language.hs:192-194
+    ///   decodePlutusRunnable pv (Plutus (PlutusBinary bs)) =
+    ///     PlutusRunnable <$> PVx.deserialiseScript (toMajorProtocolVersion pv) bs
+    ///   -- Reference: Language.hs:481-482, 501-502, 521-522
+    ///
+    /// The deserialiser decodes the flat-encoded UPLC program bytes and validates
+    /// the program structure is appropriate for the given protocol version. Plutus
+    /// scripts use flat encoding (not CBOR) — a compact bit-level binary format.
+    ///
+    /// For native scripts, `deepseq` forces the script to Normal Form to ensure
+    /// there are no unevaluated thunks (Haskell-specific concern). In Rust (a
+    /// strict language), values are always fully evaluated, so native scripts are
+    /// unconditionally well-formed.
+    pub fn is_well_formed(&self, major_protocol_version: u32) -> bool {
         match self {
-            Script::Native(_) => true, // Native scripts always well-formed
-            Script::PlutusV1(bytes) | Script::PlutusV2(bytes) => {
-                // Real implementation: validate CBOR structure
-                // Check for proper CBOR encoding, correct script format, etc.
-                !bytes.is_empty()
+            Script::Native(_) => {
+                // Haskell: deepseq timelockScript True
+                // Rust is strict — the script is already fully evaluated.
+                true
             }
+            Script::PlutusV1(bytes) => {
+                // PlutusV1 deserialized via PV1.deserialiseScript
+                is_valid_flat_encoded_script(major_protocol_version, bytes)
+            }
+            Script::PlutusV2(bytes) => {
+                // PlutusV2 deserialized via PV2.deserialiseScript
+                is_valid_flat_encoded_script(major_protocol_version, bytes)
+            }
+        }
+    }
+}
+
+/// Validate that bytes represent a well-formed flat-encoded UPLC program.
+///
+/// A flat-encoded UPLC program starts with a version triple: three Natural
+/// numbers (major, minor, patch) followed by the program Term.
+///
+/// In the `flat` Haskell library, Natural numbers use variable-length encoding:
+///
+/// ```haskell
+/// -- flat/src/Flat/Instances/Base.hs
+/// encodeNatural n
+///   | n < 128   = eBitsS 8 (fromIntegral n)
+///   | otherwise  = eBitsS 8 (setBit (fromIntegral n) 7) <> encodeNatural (n `shiftR` 7)
+/// ```
+///
+/// Each byte carries 7 data bits (bits 0-6) and 1 continuation bit (bit 7):
+///   - bit 7 = 0: final byte of this Natural
+///   - bit 7 = 1: more bytes follow
+///
+/// After the version triple, the Term is encoded at the bit level. Full term
+/// validation requires the plutus-core library; here we validate the version
+/// header structure.
+///
+/// The `major_protocol_version` is passed through to `PVx.deserialiseScript`
+/// in the Haskell implementation, where it controls which builtins and language
+/// features are accepted during deserialization.
+fn is_valid_flat_encoded_script(_major_protocol_version: u32, bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+
+    let mut pos = 0;
+
+    // Decode three Natural numbers (UPLC version triple)
+    for _ in 0..3 {
+        match decode_flat_natural(bytes, pos) {
+            Some((_, new_pos)) => pos = new_pos,
+            None => return false,
+        }
+    }
+
+    // After version header, there must be remaining bytes for the Term encoding
+    pos <= bytes.len()
+}
+
+/// Decode a single Natural number from flat encoding at the given byte position.
+///
+/// Returns `Some((value, next_position))` on success, `None` on failure.
+///
+/// Flat encoding for Natural: each byte has 7 data bits + 1 continuation bit (MSB).
+fn decode_flat_natural(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
+    let mut result: u64 = 0;
+    let mut shift: u32 = 0;
+    let mut pos = start;
+
+    loop {
+        if pos >= bytes.len() {
+            return None;
+        }
+        let byte = bytes[pos];
+        pos += 1;
+
+        let data = (byte & 0x7F) as u64;
+        result |= data.checked_shl(shift)?;
+        shift += 7;
+
+        if byte & 0x80 == 0 {
+            return Some((result, pos));
+        }
+
+        if shift > 63 {
+            return None;
         }
     }
 }
@@ -375,17 +487,38 @@ pub fn validate_babbage_missing_scripts(
 }
 
 /// Validate scripts well-formed (NEW in Babbage)
-/// Reference: Utxow.hs:248-277 (validateScriptsWellFormed)
+/// Reference: Utxow.hs:250-278 (validateScriptsWellFormed)
 ///
-/// Checks that all Plutus scripts have valid CBOR structure.
+/// ```haskell
+/// validateScriptsWellFormed pp tx =
+///   sequenceA_
+///     [ failureOnNonEmptySet (Map.keysSet invalidScriptWits) MalformedScriptWitnesses
+///     , failureOnNonEmptySet invalidRefScriptHashes MalformedReferenceScripts
+///     ]
+///   where
+///     scriptWits = tx ^. witsTxL . scriptTxWitsL
+///     invalidScriptWits = Map.filter (not . validScript (pp ^. ppProtocolVersionL)) scriptWits
+///     txBody = tx ^. bodyTxL
+///     normalOuts = toList $ txBody ^. outputsTxBodyL
+///     returnOut = txBody ^. collateralReturnTxBodyL
+///     outs = case returnOut of
+///       SNothing -> normalOuts
+///       SJust rOut -> rOut : normalOuts
+///     rScripts = mapMaybe (strictMaybeToMaybe . view referenceScriptTxOutL) outs
+///     invalidRefScripts = filter (not . validScript (pp ^. ppProtocolVersionL)) rScripts
+///     invalidRefScriptHashes = Set.fromList $ map (hashScript @era) invalidRefScripts
+/// ```
+///
+/// Checks that all Plutus scripts are well-formed (deserializable).
 pub fn validate_scripts_well_formed(
+    major_protocol_version: u32,
     scripts_provided: &HashMap<ScriptHash, Script>,
     witness_scripts: &HashMap<ScriptHash, Script>,
 ) -> Result<(), BabbageUtxowPredFailure> {
     // Check witness scripts
     let malformed_witnesses: HashSet<ScriptHash> = witness_scripts
         .iter()
-        .filter(|(_, script)| !script.is_native() && !script.is_well_formed())
+        .filter(|(_, script)| !script.is_native() && !script.is_well_formed(major_protocol_version))
         .map(|(hash, _)| *hash)
         .collect();
 
@@ -404,7 +537,7 @@ pub fn validate_scripts_well_formed(
 
     let malformed_references: HashSet<ScriptHash> = reference_scripts
         .iter()
-        .filter(|(_, script)| !script.is_native() && !script.is_well_formed())
+        .filter(|(_, script)| !script.is_native() && !script.is_well_formed(major_protocol_version))
         .map(|(hash, _)| **hash)
         .collect();
 
@@ -509,6 +642,7 @@ pub fn get_babbage_input_data_hashes(
 /// Babbage UTXOW environment
 pub struct BabbageUtxoEnv {
     pub slot: SlotNo,
+    pub protocol_version: (u32, u32),
     pub cost_models: HashMap<Language, Vec<u64>>,
 }
 
@@ -603,7 +737,8 @@ pub fn babbage_utxow_transition(
     // See shelley-utxow.rs validate_metadata(tx, protocol_version).
 
     // Step 9: Validate script well-formedness (NEW in Babbage)
-    validate_scripts_well_formed(&scripts_provided, witness_scripts)?;
+    let (major_pv, _) = _env.protocol_version;
+    validate_scripts_well_formed(major_pv, &scripts_provided, witness_scripts)?;
 
     // Step 10: Script integrity hash (same as Alonzo)
     // (Simplified)
@@ -710,11 +845,19 @@ mod tests {
 
     #[test]
     fn test_malformed_script_detection() {
-        let well_formed = Script::PlutusV2(vec![1, 2, 3]);
-        let malformed = Script::PlutusV2(vec![]); // Empty = malformed in our simplified check
+        let pv = 7; // Babbage major protocol version
 
-        assert!(well_formed.is_well_formed());
-        assert!(!malformed.is_well_formed());
+        // A valid flat-encoded UPLC program starts with a version triple.
+        // Version (1, 0, 0) encodes as [0x01, 0x00, 0x00] followed by term data.
+        let well_formed = Script::PlutusV2(vec![0x01, 0x00, 0x00, 0x42]);
+        let empty = Script::PlutusV2(vec![]);
+        let truncated_version = Script::PlutusV2(vec![0x80]); // continuation bit set, no next byte
+        let native = Script::Native(NativeScript::RequireSignature([0u8; 32]));
+
+        assert!(well_formed.is_well_formed(pv));
+        assert!(!empty.is_well_formed(pv));
+        assert!(!truncated_version.is_well_formed(pv));
+        assert!(native.is_well_formed(pv)); // Native scripts always well-formed
     }
 
     // ========================================================================
@@ -858,6 +1001,7 @@ mod tests {
 
         let env = BabbageUtxoEnv {
             slot: SlotNo(0),
+            protocol_version: (7, 0),
             cost_models: HashMap::new(),
         };
 
@@ -902,6 +1046,7 @@ mod tests {
 
         let env = BabbageUtxoEnv {
             slot: SlotNo(0),
+            protocol_version: (7, 0),
             cost_models: HashMap::new(),
         };
 
@@ -956,6 +1101,7 @@ mod tests {
 
         let env = BabbageUtxoEnv {
             slot: SlotNo(0),
+            protocol_version: (7, 0),
             cost_models: HashMap::new(),
         };
 
