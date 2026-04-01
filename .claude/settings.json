@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh api:*)",
+      "Bash(python3 -c \"import json,sys; [print\\(f[''''name''''], f[''''path'''']\\) for f in json.load\\(sys.stdin\\)]\")",
+      "Bash(gh search:*)",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(r[''''path'''']\\) for r in data]\")",
+      "Bash(python3 -c \"import json,sys; [print\\(r[''''path'''']\\) for r in json.load\\(sys.stdin\\)]\")",
+      "Bash(grep -r \"sort\\\\|order\\\\|canonical\" --include=*.hs eras/alonzo/impl/src/Cardano/Ledger/Alonzo/Plutus/TxInfo.hs eras/conway/impl/src/Cardano/Ledger/Conway/TxInfo.hs libs/cardano-ledger-core/src/Cardano/Ledger/Plutus/TxInfo.hs)",
+      "Bash(cabal exec:*)",
+      "Bash(grep -r \"Integer\\\\|i64\\\\|i128\\\\|BigInt\" /home/hypo/works/IntersectMBO/cardano-ledger/tx-validation/*.rs)",
+      "Bash(grep -r \"pub.*i64\\\\|pub.*Integer\\\\|enum.*Data\\\\|Data {\" /home/hypo/works/IntersectMBO/cardano-ledger/tx-validation/*.rs)"
+    ]
+  }
+}

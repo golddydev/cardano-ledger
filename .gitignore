@@ -24,6 +24,12 @@
 **/*-blx.bib
 **/*.run.xml
 
+## Rust build artifacts
+/tmp/libslot_time.rlib
+/tmp/slot-time-test
+*.rlib
+*.rs.bk
+
 ## Cabal & Stack (we no longer use stack)
 stack.yaml
 .stack-work*/

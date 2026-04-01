@@ -102,6 +102,21 @@ impl Value {
     }
 }
 
+/// Approximate CBOR encoding size of an unsigned integer.
+fn cbor_uint_size(val: u64) -> u32 {
+    if val < 24 {
+        1
+    } else if val <= 0xFF {
+        2
+    } else if val <= 0xFFFF {
+        3
+    } else if val <= 0xFFFF_FFFF {
+        5
+    } else {
+        9
+    }
+}
+
 /// Plutus script purpose (what action the script authorizes)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ScriptPurpose {
@@ -154,25 +169,45 @@ impl AlonzoTxOut {
         }
     }
 
-    /// Calculate serialized size (simplified)
+    /// Approximate CBOR-serialized size of the entire TxOut.
     pub fn serialized_size(&self) -> usize {
-        // Simplified calculation
-        // Real implementation would serialize and measure
-        100 // Placeholder
-    }
-
-    /// Calculate value serialized size
-    pub fn value_size(&self) -> usize {
-        // Base size for coin
-        let mut size = 8;
-        // Add size for each asset
-        for (_, assets) in &self.value.multi_asset {
-            size += 28; // Policy ID
-            for (name, _) in assets {
-                size += name.len() + 8;
-            }
+        // Approximate: address (~57 bytes) + value + datum hash (optional 34 bytes)
+        let mut size = 57 + self.cbor_value_size() as usize;
+        if self.datum_hash.is_some() {
+            size += 34;
         }
         size
+    }
+
+    /// Approximate CBOR-serialized byte length of the Value.
+    ///
+    /// Reference: eras/alonzo/impl/src/Cardano/Ledger/Alonzo/Rules/Utxo.hs:428-447
+    ///
+    /// The Haskell code uses `BSL.length (serialize (pvMajor protVer) v)` which produces
+    /// the actual CBOR-encoded byte length. This Rust implementation provides an
+    /// approximation of the CBOR encoding:
+    ///   - ADA-only: just a CBOR unsigned integer (1-9 bytes)
+    ///   - Multi-asset: CBOR array [coin, {policy_id => {asset_name => quantity}}]
+    ///
+    /// The unit is **bytes**, matching the protocol parameter `maxValSize` (also in bytes).
+    pub fn cbor_value_size(&self) -> u32 {
+        if self.value.is_ada_only() {
+            cbor_uint_size(self.value.coin)
+        } else {
+            // [coin, multi_asset_map]
+            let mut size: u32 = 2; // CBOR array(2) header
+            size += cbor_uint_size(self.value.coin);
+            size += 1; // CBOR map header (assuming < 24 entries)
+            for (_, assets) in &self.value.multi_asset {
+                size += 30; // Policy ID: 2-byte CBOR bytes header + 28 bytes
+                size += 1;  // inner map header
+                for (name, _) in assets {
+                    size += 2 + name.len() as u32; // CBOR bytes header + asset name
+                    size += 9; // quantity (worst case CBOR uint)
+                }
+            }
+            size
+        }
     }
 }
 
@@ -1068,9 +1103,32 @@ pub fn validate_too_many_collateral_inputs(
     }
 }
 
-/// Validate output value size
+/// Validate output value size (CBOR-serialized bytes)
 ///
-/// Reference: eras/alonzo/impl/src/Cardano/Ledger/Alonzo/Rules/Utxo.hs:394-418
+/// Reference: eras/alonzo/impl/src/Cardano/Ledger/Alonzo/Rules/Utxo.hs:423-447
+///
+/// ```haskell
+/// validateOutputTooBigUTxO pp outputs =
+///   failureOnNonEmpty outputsTooBig OutputTooBigUTxO
+///   where
+///     maxValSize = pp ^. ppMaxValSizeL
+///     protVer = pp ^. ppProtocolVersionL
+///     outputsTooBig = F.foldl' accum [] outputs
+///     accum ans txOut =
+///       let v = txOut ^. valueTxOutL
+///           serSize = fromIntegral $ BSL.length $ serialize (pvMajor protVer) v
+///        in if serSize > maxValSize
+///             then (fromIntegral serSize, fromIntegral maxValSize, txOut) : ans
+///             else ans
+/// ```
+///
+/// Formal: ∀ txout ∈ txouts txb, serSize (getValue txout) ≤ maxValSize pp
+///
+/// The size measured is the CBOR-serialized byte length of the Value (not the
+/// entire TxOut). The `maxValSize` protocol parameter is also in bytes.
+///
+/// Key difference from Allegra: uses `ppMaxValSizeL` (protocol parameter) instead
+/// of a hardcoded 4000-byte limit.
 pub fn validate_output_too_big(
     pp: &AlonzoPParams,
     outputs: &[AlonzoTxOut],
@@ -1078,9 +1136,9 @@ pub fn validate_output_too_big(
     let too_big: Vec<(usize, u32, AlonzoTxOut)> = outputs
         .iter()
         .filter_map(|out| {
-            let size = out.value_size();
-            if size > pp.max_val_size as usize {
-                Some((size, pp.max_val_size, out.clone()))
+            let ser_size = out.cbor_value_size();
+            if ser_size > pp.max_val_size {
+                Some((ser_size as usize, pp.max_val_size, out.clone()))
             } else {
                 None
             }
@@ -1096,12 +1154,13 @@ pub fn validate_output_too_big(
 
 /// Calculate minimum UTxO value (Alonzo size-based)
 ///
-/// Alonzo formula: (utxoEntrySizeWithoutVal + valueSize/8) * coinsPerUTxOWord
+/// Alonzo formula: (utxoEntrySizeWithoutVal + (valueSize + 7) / 8) * coinsPerUTxOWord
+///
+/// Note: `valueSize` here refers to the number of 8-byte words the Value occupies,
+/// distinct from `cbor_value_size()` which measures CBOR-serialized bytes.
 pub fn get_min_coin_tx_out(pp: &AlonzoPParams, output: &AlonzoTxOut) -> Coin {
-    // Simplified calculation
-    // Real implementation is more complex
-    let base_size: u64 = 27; // UTxO entry size without value
-    let value_size = output.value_size() as u64;
+    let base_size: u64 = 27; // UTxO entry size without value (in words)
+    let value_size = output.cbor_value_size() as u64;
     let words = base_size + (value_size + 7) / 8;
     words * pp.coins_per_utxo_word
 }

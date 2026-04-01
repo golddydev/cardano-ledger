@@ -39,6 +39,21 @@ pub use super::shelley_utxo::{
 // Babbage-Specific Type Definitions
 // ============================================================================
 
+/// Approximate CBOR encoding size of an unsigned integer.
+fn cbor_uint_size(val: u64) -> u32 {
+    if val < 24 {
+        1
+    } else if val <= 0xFF {
+        2
+    } else if val <= 0xFFFF {
+        3
+    } else if val <= 0xFFFF_FFFF {
+        5
+    } else {
+        9
+    }
+}
+
 /// Babbage transaction output with inline datum and reference script support
 #[derive(Debug, Clone)]
 pub struct BabbageTxOut {
@@ -68,21 +83,40 @@ impl BabbageTxOut {
         }
     }
 
-    /// Calculate serialized size (for minUTxO calculation)
+    /// Approximate CBOR-serialized byte length of the Value.
+    ///
+    /// Reference: eras/alonzo/impl/src/Cardano/Ledger/Alonzo/Rules/Utxo.hs:428-447
+    ///
+    /// The Haskell code uses `BSL.length (serialize (pvMajor protVer) v)`.
+    /// The unit is **bytes**, matching the protocol parameter `maxValSize`.
+    pub fn cbor_value_size(&self) -> u32 {
+        if self.value.is_ada_only() {
+            cbor_uint_size(self.value.coin)
+        } else {
+            let mut size: u32 = 2; // CBOR array(2) header
+            size += cbor_uint_size(self.value.coin);
+            size += 1; // CBOR map header
+            for (_, assets) in &self.value.multi_asset {
+                size += 30; // Policy ID: 2-byte CBOR header + 28 bytes
+                size += 1;  // inner map header
+                for (name, _) in assets {
+                    size += 2 + name.len() as u32;
+                    size += 9; // quantity (worst case)
+                }
+            }
+            size
+        }
+    }
+
+    /// Approximate CBOR-serialized size of the entire TxOut (for minUTxO calculation).
     pub fn serialized_size(&self) -> usize {
-        let mut size = 0;
+        let mut size: usize = 0;
 
         // Address size (varies by type)
         size += 57; // Base address is typically 57 bytes
 
-        // Value size
-        size += 8; // Coin
-        for (_, assets) in &self.value.multi_asset {
-            size += 28; // Policy ID
-            for (name, _) in assets {
-                size += name.len() + 8;
-            }
-        }
+        // Value size (CBOR bytes)
+        size += self.cbor_value_size() as usize;
 
         // Datum size
         size += match &self.datum {
@@ -565,6 +599,46 @@ pub fn validate_output_too_small(
     }
 }
 
+/// Validate output value size (CBOR-serialized bytes)
+///
+/// Reference: eras/babbage/impl/src/Cardano/Ledger/Babbage/Rules/Utxo.hs:409-411
+///
+/// ```haskell
+/// let allOutputs = fmap sizedValue allSizedOutputs
+/// {-   ∀ txout ∈ allOuts txb, serSize (getValue txout) ≤ maxValSize pp   -}
+/// runTest $ Alonzo.validateOutputTooBigUTxO pp allOutputs
+/// ```
+///
+/// Babbage reuses Alonzo's `validateOutputTooBigUTxO` but applies it to ALL outputs
+/// (regular + collateral return), via `allSizedOutputsTxBodyF`.
+///
+/// The size measured is the CBOR-serialized byte length of the Value.
+/// The `maxValSize` protocol parameter is in bytes.
+pub fn validate_output_too_big(
+    pp: &BabbagePParams,
+    outputs: &[BabbageTxOut],
+) -> Result<(), BabbageUtxoPredFailure> {
+    let too_big: Vec<(usize, u32, AlonzoTxOut)> = outputs
+        .iter()
+        .filter_map(|out| {
+            let ser_size = out.cbor_value_size();
+            if ser_size > pp.max_val_size {
+                Some((ser_size as usize, pp.max_val_size, convert_to_alonzo_out(out)))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if too_big.is_empty() {
+        Ok(())
+    } else {
+        Err(BabbageUtxoPredFailure::AlonzoInBabbage(
+            AlonzoUtxoPredFailure::OutputTooBigUTxO(too_big),
+        ))
+    }
+}
+
 /// Comprehensive Babbage fee and collateral validation
 ///
 /// Reference: eras/babbage/impl/src/Cardano/Ledger/Babbage/Rules/Utxo.hs:136-219
@@ -766,8 +840,13 @@ pub fn babbage_utxo_transition(
         errors.push(e);
     }
 
-    // Step 9: validateOutputTooBigUTxO (ALL outputs)
-    // Omitted for brevity
+    // Step 9: validateOutputTooBigUTxO (ALL outputs including collateral return)
+    // Reference: Babbage/Utxo.hs:409-411
+    // Uses Alonzo.validateOutputTooBigUTxO on allOutputs (unwrapped from SizedTxOut)
+    let all_outputs: Vec<BabbageTxOut> = all_sized_outputs.iter().map(|s| s.output.clone()).collect();
+    if let Err(e) = validate_output_too_big(&env.pp, &all_outputs) {
+        errors.push(e);
+    }
 
     // Steps 10-15: Network checks, size limits, ex units
     // Omitted for brevity
