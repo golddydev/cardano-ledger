@@ -1092,8 +1092,8 @@ instance Typeable era => HasSpec (ShelleyAccounts era)
 type ConwayAccountStateTypes era =
   '[ CompactForm Coin
    , CompactForm Coin
-   , StrictMaybe (KeyHash StakePool)
-   , StrictMaybe DRep
+   , Maybe (KeyHash StakePool)
+   , Maybe DRep
    ]
 
 instance HasSimpleRep (ConwayAccountState era) where
@@ -1572,6 +1572,12 @@ instance
   (EraGov era, EraTxOut era, EraSpecPParams era, EraCertState era, HasSpec (CertState era)) =>
   HasSpec (UtxoEnv era)
 
+instance Era era => HasSimpleRep (ConwayUtxosEnv era)
+
+instance
+  (Era era, EraSpecPParams era, HasSpec (TxOut era), IsNormalType (TxOut era)) =>
+  HasSpec (ConwayUtxosEnv era)
+
 -- ================================================================
 -- All the Tx instances
 
@@ -1914,7 +1920,7 @@ instance HasSpec RewardUpdate
 type PulserTypes =
   '[ Int
    , FreeVars
-   , VMap VMap.VB VMap.VB (Credential Staking) StakeWithDelegation
+   , VMap VMap.VB VMap.VS (Credential Staking) StakeWithDelegation
    , RewardAns
    ]
 

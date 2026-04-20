@@ -55,9 +55,10 @@ module Cardano.Ledger.Shelley.HuddleSpec (
   untaggedSet,
 ) where
 
-import Cardano.Ledger.Core.HuddleSpec (majorProtocolVersionRule)
+import Cardano.Ledger.Core.HuddleSpec (majorProtocolVersionRule, plutusScriptGen)
 import Cardano.Ledger.Huddle
 import Cardano.Ledger.Shelley (ShelleyEra)
+import Data.Int (Int32)
 import Data.Proxy (Proxy (..))
 import Data.Word (Word64)
 import Text.Heredoc
@@ -106,8 +107,8 @@ protocolParamUpdateRule pname p =
     =.= mp
       [ opt (idx 0 ==> VUInt) //- "minfee A"
       , opt (idx 1 ==> VUInt) //- "minfee B"
-      , opt (idx 2 ==> VUInt) //- "max block body size"
-      , opt (idx 3 ==> VUInt) //- "max transaction size"
+      , opt (idx 2 ==> VUInt `sized` (4 :: Word64)) //- "max block body size"
+      , opt (idx 3 ==> VUInt `sized` (4 :: Word64)) //- "max transaction size"
       , opt (idx 4 ==> VUInt `sized` (2 :: Word64)) //- "max block header size"
       , opt (idx 5 ==> huddleRule @"coin" p) //- "key deposit"
       , opt (idx 6 ==> huddleRule @"coin" p) //- "pool deposit"
@@ -176,7 +177,7 @@ bootstrapWitnessRule pname p =
     =.= arr
       [ "public_key" ==> huddleRule @"vkey" p
       , "signature" ==> huddleRule @"signature" p
-      , "chain_code" ==> VBytes `sized` (32 :: Word64)
+      , "chain_code" ==> VBytes
       , "attributes" ==> VBytes
       ]
 
@@ -541,10 +542,18 @@ instance HuddleGroup "script_all" ShelleyEra where
 instance HuddleGroup "script_any" ShelleyEra where
   huddleGroupNamed = scriptAnyGroup
 
+instance HuddleRule "int32" ShelleyEra where
+  huddleRuleNamed pname _ =
+    pname =.= (toInteger (minBound :: Int32) ... toInteger (maxBound :: Int32))
+
 instance HuddleGroup "script_n_of_k" ShelleyEra where
   huddleGroupNamed pname p =
     pname
-      =.~ grp [3, "n" ==> VUInt, a $ arr [0 <+ a (huddleRule @"native_script" p)]]
+      =.~ grp
+        [ 3
+        , "n" ==> huddleRule @"int32" p
+        , a $ arr [0 <+ a (huddleRule @"native_script" p)]
+        ]
 
 instance HuddleRule "native_script" ShelleyEra where
   huddleRuleNamed pname p =
@@ -555,7 +564,7 @@ instance HuddleRule "native_script" ShelleyEra where
           |  - Disjunctions (script_any)
           |  - M-of-N thresholds (script_n_of_k)
           |
-          |Note: Shelley uses VUInt for the threshold in script_n_of_k.
+          |Note: Shelley uses VInt for the threshold in script_n_of_k.
           |]
       $ pname
         =.= arr [a $ huddleGroup @"script_pubkey" p]
@@ -610,3 +619,14 @@ instance HuddleRule "block" ShelleyEra where
 
 instance HuddleRule1 "set" ShelleyEra where
   huddleRule1Named pname _ = untaggedSet pname
+
+instance HuddleRule "metadatum" ShelleyEra where
+  huddleRuleNamed pname p =
+    pname
+      =.= smp
+        [ 0 <+ asKey (huddleRule @"metadatum" p) ==> huddleRule @"metadatum" p
+        ]
+      / sarr [0 <+ a (huddleRule @"metadatum" p)]
+      / VInt
+      / VBytes
+      / VText

@@ -1,8 +1,35 @@
 # Version history for `cardano-ledger-alonzo`
 
-## 1.15.0.1
+## 1.16.0.0
 
-*
+* Remove `ToCBOR` and `FromCBOR` instances for `AlonzoExtraConfig` and `AlonzoTxOut`
+* Add `ApplyTick` instance for `AlonzoEra`
+* Add `mkPlutusTxInfoFromResult` and `toPlutusTxInfoForPurpose` helpers
+* Make `PlutusPurpose` injective in the selector type.
+* `LedgerTxInfo` now supports any transaction level
+* Add new type `PlutusTxInfoResult`
+* `toPlutusTxInfo` changed its return type to `PlutusTxInfoResult`
+* Support for both transaction levels in `collectPlutusScriptsWithContext`
+* Add `AsPurpose` and `toAsPurpose`
+* `AlonzoTxInfoResult` changed its content type to `PlutusTxInfoResult`
+* `AlonzoPlutusPurpose` supplied to `transPlutusPurpose` changed from `AsItem` to `AsIxItem`
+* Add `EraForecast` and `ShelleyEraForecast` instances for `AlonzoEra`.
+* Change `AlonzoBBODY` `Signal` to `BbodySignal`.
+* Add `validateExUnits`.
+* Remove `NoThunks` instances for all predicate failure types:
+  - `AlonzoBbodyPredFailure`
+  - `AlonzoUtxoPredFailure`
+  - `AlonzoUtxosPredFailure`
+  - `AlonzoUtxowPredFailure`
+* Remove `NoThunks` instance for `AlonzoContextError`
+* Remove `NoThunks (ContextError era)` constraint from `EraPlutusContext` class
+* Remove `NoThunks` deriving instance for `CollectError`
+* Make `AlonzoContextError` constructors lazy
+
+### `testlib`
+
+* Added `Proxy era` argument to `exUnitsRule`
+* `TranslationInstance` has a new field `tiPlutusPurpose`
 
 ## 1.15.0.0
 

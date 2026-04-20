@@ -25,7 +25,6 @@ module Cardano.Ledger.Alonzo.HuddleSpec (
   bigIntRule,
   scriptDataHashRule,
   boundedBytesRule,
-  distinctBytesRule,
   alonzoRedeemer,
   alonzoRedeemerTag,
   exUnitPricesRule,
@@ -49,8 +48,13 @@ alonzoCDDL =
     , HIRule $ huddleRule @"signkey_kes" (Proxy @AlonzoEra)
     ]
 
-exUnitsRule :: Proxy "ex_units" -> Rule
-exUnitsRule pname = pname =.= arr ["mem" ==> VUInt, "steps" ==> VUInt]
+exUnitsRule :: Era era => Proxy "ex_units" -> Proxy era -> Rule
+exUnitsRule pname era =
+  pname
+    =.= arr
+      [ "mem" ==> (0 :: Integer) ... huddleRule @"max_int64" era
+      , "steps" ==> (0 :: Integer) ... huddleRule @"max_int64" era
+      ]
 
 networkIdRule :: Proxy "network_id" -> Rule
 networkIdRule pname = pname =.= int 0 / int 1
@@ -100,20 +104,6 @@ boundedBytesRule pname =
         | of definite-length encoded bytestrings and a stop code )
         |]
     $ pname =.= VBytes `sized` (0 :: Word64, 64 :: Word64)
-
-distinctBytesRule :: Proxy "distinct_bytes" -> Rule
-distinctBytesRule pname =
-  comment
-    [str|A type for distinct values.
-        |The type parameter must support .size, for example: bytes or uint
-        |]
-    $ pname
-      =.= (VBytes `sized` (8 :: Word64))
-      / (VBytes `sized` (16 :: Word64))
-      / (VBytes `sized` (20 :: Word64))
-      / (VBytes `sized` (24 :: Word64))
-      / (VBytes `sized` (30 :: Word64))
-      / (VBytes `sized` (32 :: Word64))
 
 exUnitPricesRule ::
   forall era.
@@ -490,16 +480,14 @@ instance HuddleRule "required_signers" AlonzoEra where
 instance HuddleRule "network_id" AlonzoEra where
   huddleRuleNamed pname _ = networkIdRule pname
 
-instance (Era era, HuddleRule "distinct_bytes" era) => HuddleRule "plutus_v1_script" era where
-  huddleRuleNamed pname p =
+instance Era era => HuddleRule "plutus_v1_script" era where
+  huddleRuleNamed pname _ =
     comment
       [str|Alonzo introduces Plutus smart contracts.
           |Plutus V1 scripts are opaque bytestrings.
           |]
-      $ pname =.= huddleRule @"distinct_bytes" p
-
-instance HuddleRule "distinct_bytes" AlonzoEra where
-  huddleRuleNamed pname _ = distinctBytesRule pname
+      . withCBORGen plutusScriptGen
+      $ pname =.= VBytes
 
 instance HuddleRule "bounded_bytes" AlonzoEra where
   huddleRuleNamed pname _ = boundedBytesRule pname
@@ -544,7 +532,7 @@ alonzoRedeemer pname p =
   pname
     =.= arr
       [ "tag" ==> huddleRule @"redeemer_tag" p
-      , "index" ==> VUInt
+      , "index" ==> VUInt `sized` (4 :: Word64)
       , "data" ==> huddleRule @"plutus_data" p
       , "ex_units" ==> huddleRule @"ex_units" p
       ]
@@ -566,7 +554,7 @@ instance HuddleRule "redeemer_tag" AlonzoEra where
   huddleRuleNamed pname _ = alonzoRedeemerTag pname
 
 instance HuddleRule "ex_units" AlonzoEra where
-  huddleRuleNamed pname _ = exUnitsRule pname
+  huddleRuleNamed = exUnitsRule
 
 instance HuddleRule "ex_unit_prices" AlonzoEra where
   huddleRuleNamed = exUnitPricesRule
@@ -603,3 +591,6 @@ instance HuddleRule1 "set" AlonzoEra where
 
 instance HuddleRule1 "multiasset" AlonzoEra where
   huddleRule1Named = maryMultiasset
+
+instance HuddleRule "metadatum" AlonzoEra where
+  huddleRuleNamed = allegraMetadatumRule

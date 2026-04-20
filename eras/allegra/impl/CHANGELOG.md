@@ -1,8 +1,10 @@
 # Version history for `cardano-ledger-allegra`
 
-## 1.9.0.1
+## 1.10.0.0
 
-*
+* Add `ApplyTick` instance for `AllegraEra`
+* Add `EraForecast` and `ShelleyEraForecast` instances for `AllegraEra`.
+* Remove `NoThunks` instance for `AllegraUtxoPredFailure`
 
 ## 1.9.0.0
 

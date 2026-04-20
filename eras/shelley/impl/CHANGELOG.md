@@ -1,8 +1,56 @@
 # Version history for `cardano-ledger-shelley`
 
-## 1.18.0.1
+## 1.19.0.0
 
-*
+* Add `InjectionData`, `foldInjectionData`, `InjectionError` to `Cardano.Ledger.Shelley.Genesis`
+* Add `ShelleyExtraConfig` type to `Cardano.Ledger.Shelley.Genesis`
+* Add `sgExtraConfig` field to `ShelleyGenesis`
+* Change `registerInitialFunds`, `shelleyRegisterInitialFundsThenStaking`, and `injectIntoTestState` to require `MonadIO` and `MonadThrow`, and accept a `HasFS m h` parameter for streaming initial funds from external files
+* Remove `ToCBOR` and `FromCBOR` instances for `UTxOState`, `LedgerState`, `ShelleyTxOut`
+* Add `ApplyTick` typeclass with `applyTick` method, extracted from `ApplyBlock`.
+* Remove `validMetadata` from `SoftForks`
+* Add `updateUTxOStateNoFees`
+* Add `Shelley.API.Forecast` and `Shelley.Forecast`:
+  - Add `EraForecast` and `ShelleyEraForecast` typeclasses to deprecate `GetLedgerView` from `cardano-ledger-tpraos`.
+  - Add `currentForecast` and `futureForecast` functions to deprecate `currentLedgerView` and `futureLedgerView`.
+  - Add `ShelleyForecast` to deprecate `LedgerView` for TPraos.
+    + `mkShelleyForecast`
+    + `sfPoolDistrL`
+    + `sfMaxBlockHeaderSizeL`
+    + `sfMaxBlockBodySizeL`
+    + `sfProtocolVersionL`
+    + `sfGenDelegsL`
+    + `sfDecentralizationL`
+    + `sfExtraEntropyL`
+* Deprecate `BHeaderView` in favour of `EraBlockHeader`.
+  - Add `wrapBlockSignal` to `ApplyBlock` typeclass for use within `applyBlock` to generalise over `Signal`.
+  - `chainChecks` now takes a `Block h era` instead.
+  - `ApplyBlock era` now takes another parameter (block header) to become `ApplyBlock h era`.
+    + `applyBlock*` functions and `applyTickNoEvents` now take `Block h era` instead.
+  - Update `incrBlocks` to `:: SlotNo -> UnitInterval -> SlotNo -> KeyHash StakePool -> BlocksMake -> BlocksMade`.
+  - Change `ShelleyBBODY` `Signal` to `BbodySignal`.
+  - Add `validateBlockBodySize` and `validateBlockBodyHash`.
+* Remove `NoThunks` instances for all predicate failure types:
+  - `ShelleyUtxoPredFailure`
+  - `ShelleyUtxowPredFailure`
+  - `ShelleyBbodyPredFailure`
+  - `ShelleyDelegPredFailure`
+  - `ShelleyDelegsPredFailure`
+  - `ShelleyDelplPredFailure`
+  - `ShelleyLedgerPredFailure`
+  - `ShelleyLedgersPredFailure`
+  - `ShelleyPoolPredFailure`
+  - `ShelleyPpupPredFailure`
+  - `ChainPredicateFailure`
+* Add protocol version validation to `createInitialState`:
+  - Validate that current protocol version is within the era's bounds
+
+### `testlib`
+
+* Add `HuddleRule "int32" ShelleyEra` instance
+* Add `withIssuerAndTxsInBlock_` and `withIssuerAndTxsInBlock`
+* Add a `Maybe (KeyHash BlockIssuer)` parameter to `withTxsInBlockEither`
+* Export `exampleShelleyScript` and `exampleBootstrapWitness` from `Test.Cardano.Ledger.Shelley.Examples`
 
 ## 1.18.0.0
 

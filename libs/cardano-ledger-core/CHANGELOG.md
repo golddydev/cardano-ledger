@@ -1,7 +1,20 @@
 # Version history for `cardano-ledger-core`
 
-## 1.20.0.0
+## 1.21.0.0
 
+* Remove `ToCBOR` and `FromCBOR` instances for `TxIx`, `CertIx`, `SlotNo32`, `Ptr`, `VRFVerKeyHash`, `SafeHash`, `VoidEraRule`, `Language`, `SLanguage`
+* Remove `FromCBOR` instances for `ScriptHash`, `ChainCode`, `PlutusBinary`, `BootstrapWitness`, `WitVKey`
+* Remove `ToCBOR` and `FromCBOR` instances for `PlutusWithContext`
+  - Add `EncCBOR` and `DecCBOR` instances as replacement
+* Remove `ToCBOR (TxOut era)` superclass constraint from `EraTxOut`
+* Remove `validMetadatum`
+* Deprecate `BHeaderView` in favour `*EraBlockHeader` typeclasses.
+  - Move `isOverlaySlot` to `Cardano.Ledger.Slot`.
+  - Remove `PerasCert`, `PerasKey` and `validatePerasCert` to `dijkstra`.
+  - Add `BbodySignal` datatype and the `EraBlockHeader` typeclass.
+  - Add `slotToEpochBoundary`.
+* Change `Metadatum.B` from `ByteString` to `ByteArray` for more efficient memory allocation
+* Add orphan instance `NoThunks ByteArray`
 * Remove orphan `NoThunks`, `NFData`, `FromJSON`, `ToJSON` instances for `IPv4` and `IPv6`
   - Moved to `cardano-base:Cardano.Base.IP`
 * Remove `ToCBOR` and `FromCBOR` instances for `Nonce`
@@ -9,7 +22,13 @@
 
 ### `testlib`
 
+* Add `TestBlockHeader` and `mkTestBlockHeaderNoNonce` as a replacement to deprecated `BHeaderView` and `makeHeaderView`.
 * Modify `ToExpr` instance for `Mismatch` to display type-level `r` parameter using `Typeable`
+
+## 1.20.0.0
+
+* Add `Storable` instance for `NonZero`, `CompactForm Coin`, `KeyHash`, `ScriptHash`, `Credential` and `StakeWithDelegation`
+* Switch `ActiveStake` to use `VS` for the value in the `VMap`
 
 ## 1.19.0.0
 

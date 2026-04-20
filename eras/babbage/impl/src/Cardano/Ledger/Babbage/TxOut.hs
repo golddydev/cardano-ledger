@@ -46,6 +46,7 @@ import Cardano.Ledger.Address (
   CompactAddr,
   compactAddr,
   decompactAddr,
+  fromCborBackwardsBothAddr,
   fromCborBothAddr,
  )
 import Cardano.Ledger.Alonzo (AlonzoEra)
@@ -79,10 +80,8 @@ import Cardano.Ledger.Binary (
   DecoderError (..),
   EncCBOR (..),
   Encoding,
-  FromCBOR (..),
   Interns,
   Sized (..),
-  ToCBOR (..),
   TokenType (..),
   cborError,
   decodeBreakOr,
@@ -495,14 +494,6 @@ pattern TxOutCompactDH addr vl dh <-
 
 {-# COMPLETE TxOutCompact, TxOutCompactDH #-}
 
-instance (EraScript era, Val (Value era)) => ToCBOR (BabbageTxOut era) where
-  toCBOR = toEraCBOR @era
-  {-# INLINE toCBOR #-}
-
-instance (EraScript era, Val (Value era)) => FromCBOR (BabbageTxOut era) where
-  fromCBOR = fromEraCBOR @era
-  {-# INLINE fromCBOR #-}
-
 instance (EraScript era, Val (Value era)) => EncCBOR (BabbageTxOut era) where
   encCBOR = \case
     TxOutCompactRefScript addr cv d rs -> encodeTxOut addr cv d (SJust rs)
@@ -528,7 +519,7 @@ instance
       peekTokenType >>= \case
         TypeBytes -> decodeMemPack
         TypeBytesIndef -> decodeMemPack
-        _ -> decCBOR
+        _ -> decodeBabbageTxOut fromCborBackwardsBothAddr
     pure $! internBabbageTxOut (interns credsInterns) txOut
   {-# INLINEABLE decShareCBOR #-}
 

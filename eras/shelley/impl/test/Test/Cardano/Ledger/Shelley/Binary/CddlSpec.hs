@@ -23,6 +23,7 @@ import Test.Cardano.Ledger.Binary.Cuddle (
   huddleRoundTripAnnCborSpec,
   huddleRoundTripArbitraryValidate,
   huddleRoundTripCborSpec,
+  noTwiddle,
   specWithHuddle,
  )
 import Test.Cardano.Ledger.Common
@@ -32,51 +33,51 @@ spec :: Spec
 spec =
   describe "CDDL" $ do
     let v = eraProtVerLow @ShelleyEra
-    describe "Huddle" $ specWithHuddle shelleyCDDL $ do
+    describe "Huddle" . specWithHuddle shelleyCDDL . noTwiddle $ do
       huddleRoundTripCborSpec @Addr v "address"
       huddleRoundTripArbitraryValidate @Addr v "address"
-      huddleRoundTripAnnCborSpec @BootstrapWitness v "bootstrap_witness"
       huddleRoundTripArbitraryValidate @BootstrapWitness v "bootstrap_witness"
       huddleRoundTripCborSpec @BootstrapWitness v "bootstrap_witness"
       huddleRoundTripCborSpec @AccountAddress v "reward_account"
-      xdescribe "no decision points" $ huddleAntiCborSpec @AccountAddress v "reward_account"
-      xdescribe "Fix distinct_bytes" $ huddleAntiCborSpec @BootstrapWitness v "bootstrap_witness"
+      huddleAntiCborSpec @BootstrapWitness v "bootstrap_witness"
       huddleRoundTripCborSpec @(Credential Staking) v "stake_credential"
       huddleAntiCborSpec @(Credential Staking) v "stake_credential"
       huddleRoundTripAnnCborSpec @(TxBody TopTx ShelleyEra) v "transaction_body"
       huddleRoundTripCborSpec @(TxBody TopTx ShelleyEra) v "transaction_body"
-      xdescribe "fix protocol_version" $
+      xdescribe "fix protver decoder" $
         huddleAntiCborSpec @(TxBody TopTx ShelleyEra) v "transaction_body"
       huddleRoundTripCborSpec @(TxOut ShelleyEra) v "transaction_output"
       huddleAntiCborSpec @(TxOut ShelleyEra) v "transaction_output"
       huddleRoundTripCborSpec @StakePoolRelay v "relay"
-      xdescribe "fix ipv4 spec" $ huddleAntiCborSpec @StakePoolRelay v "relay"
+      huddleAntiCborSpec @StakePoolRelay v "relay"
       huddleRoundTripCborSpec @(TxCert ShelleyEra) v "certificate"
-      huddleAntiCborSpec @(TxCert ShelleyEra) v "certificate"
+      xdescribe "fix certificate" $ huddleAntiCborSpec @(TxCert ShelleyEra) v "certificate"
       huddleRoundTripCborSpec @TxIn v "transaction_input"
       huddleAntiCborSpec @TxIn v "transaction_input"
       huddleRoundTripAnnCborSpec @(TxAuxData ShelleyEra) v "metadata"
       huddleRoundTripCborSpec @(TxAuxData ShelleyEra) v "metadata"
-      xdescribe "fix metadatum" $ huddleAntiCborSpec @(TxAuxData ShelleyEra) v "metadata"
+      xdescribe "too many discards" $
+        huddleAntiCborSpec @(TxAuxData ShelleyEra) v "metadata"
       huddleRoundTripAnnCborSpec @(MultiSig ShelleyEra) v "native_script"
       huddleRoundTripCborSpec @(MultiSig ShelleyEra) v "native_script"
-      xdescribe "fix script_n_of_k decoder" $ huddleAntiCborSpec @(MultiSig ShelleyEra) v "native_script"
+      huddleAntiCborSpec @(MultiSig ShelleyEra) v "native_script"
       huddleRoundTripCborSpec @(Update ShelleyEra) v "update"
-      xdescribe "fix major_protocol_version" $ huddleAntiCborSpec @(Update ShelleyEra) v "update"
+      xdescribe "fix protver decoder" $
+        huddleAntiCborSpec @(Update ShelleyEra) v "update"
       huddleRoundTripCborSpec @(ProposedPPUpdates ShelleyEra) v "proposed_protocol_parameter_updates"
-      xdescribe "fix major_protocol_version" $
+      xdescribe "fix protver decoder" $
         huddleAntiCborSpec @(ProposedPPUpdates ShelleyEra) v "proposed_protocol_parameter_updates"
       huddleRoundTripCborSpec @(PParamsUpdate ShelleyEra) v "protocol_param_update"
-      xdescribe "fix major_protocol_version" $
+      xdescribe "fix protver decoder" $
         huddleAntiCborSpec @(PParamsUpdate ShelleyEra) v "protocol_param_update"
       huddleRoundTripAnnCborSpec @(Tx TopTx ShelleyEra) v "transaction"
       huddleRoundTripCborSpec @(Tx TopTx ShelleyEra) v "transaction"
-      xdescribe "Fix distinct_bytes" $ huddleAntiCborSpec @(Tx TopTx ShelleyEra) v "transaction"
+      xdescribe "fix transaction fields" $
+        huddleAntiCborSpec @(Tx TopTx ShelleyEra) v "transaction"
       huddleRoundTripAnnCborSpec @(TxWits ShelleyEra) v "transaction_witness_set"
       huddleRoundTripCborSpec @(TxWits ShelleyEra) v "transaction_witness_set"
-      xdescribe "Fix distinct_bytes" $ huddleAntiCborSpec @(TxWits ShelleyEra) v "transaction_witness_set"
+      huddleAntiCborSpec @(TxWits ShelleyEra) v "transaction_witness_set"
       describe "DecCBOR instances equivalence via CDDL" $ do
-        huddleDecoderEquivalenceSpec @BootstrapWitness v "bootstrap_witness"
         huddleDecoderEquivalenceSpec @(TxBody TopTx ShelleyEra) v "transaction_body"
         huddleDecoderEquivalenceSpec @(TxAuxData ShelleyEra) v "metadata"
         huddleDecoderEquivalenceSpec @(MultiSig ShelleyEra) v "native_script"

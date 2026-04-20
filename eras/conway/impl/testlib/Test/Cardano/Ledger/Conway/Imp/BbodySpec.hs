@@ -36,7 +36,9 @@ import Test.Cardano.Ledger.Core.Utils (txInAt)
 import Test.Cardano.Ledger.Imp.Common
 import Test.Cardano.Ledger.Plutus.Examples (alwaysFailsNoDatum, purposeIsWellformedNoDatum)
 
-spec :: forall era. ConwayEraImp era => SpecWith (ImpInit (LedgerSpec era))
+spec ::
+  forall era.
+  ConwayEraImp era => SpecWith (ImpInit (LedgerSpec era))
 spec = do
   it "BodyRefScriptsSizeTooBig" $ do
     plutusScript <- mkPlutusScript @era $ purposeIsWellformedNoDatum SPlutusV2
@@ -44,17 +46,21 @@ spec = do
     pp <- getsPParams id
 
     -- Determine a number of transactions and a number of times the reference script
-    -- needs to be included as an input in each transaction,
-    -- in order for the total to exceed the maximum allowed refScript size per block,
-    -- while the refScript size per individual transaction doesn't exceed maxRefScriptSizePerTx
+    -- needs to be included as an input in each transaction, such that:
+    --  * the total exceeds the maximum allowed refScript size per block
+    --  * the refScript size per individual transaction doesn't exceed maxRefScriptSizePerTx
+    --  * the number of reference inputs doesn't make the transaction exceed maxTxSize
     let
       maxRefScriptSizePerTx = fromIntegral @Word32 @Int $ pp ^. ppMaxRefScriptSizePerTxG
       maxRefScriptSizePerBlock = fromIntegral @Word32 @Int $ pp ^. ppMaxRefScriptSizePerBlockG
+      -- we're capping the number of scripts per transaction so that we don't exceed transaction ppMaxTxSizeL
+      maxScriptsPerTx = 100
+      maxSingle = min maxRefScriptSizePerTx (maxScriptsPerTx * scriptSize)
 
     txScriptCounts <-
       genNumAdditionsExceeding
         scriptSize
-        maxRefScriptSizePerTx
+        maxSingle
         maxRefScriptSizePerBlock
 
     txs <- for txScriptCounts $ \n -> do
@@ -86,10 +92,12 @@ spec = do
       let
         maxRefScriptSizePerTx = fromIntegral @Word32 @Int $ pp ^. ppMaxRefScriptSizePerTxG
         maxRefScriptSizePerBlock = fromIntegral @Word32 @Int $ pp ^. ppMaxRefScriptSizePerBlockG
+        maxScriptsPerTx = 100
+        maxSingle = min maxRefScriptSizePerTx (maxScriptsPerTx * scriptSize)
       txScriptCounts <-
         genNumAdditionsExceeding
           scriptSize
-          maxRefScriptSizePerTx
+          maxSingle
           maxRefScriptSizePerBlock
 
       let

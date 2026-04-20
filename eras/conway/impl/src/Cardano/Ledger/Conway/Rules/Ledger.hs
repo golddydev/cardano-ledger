@@ -22,7 +22,10 @@ module Cardano.Ledger.Conway.Rules.Ledger (
   conwayLedgerTransition,
   conwayLedgerTransitionTRC,
   validateTreasuryValue,
+  validateRefScriptSize,
   validateWithdrawalsDelegated,
+  updateDormantDRepExpiries,
+  updateVotingDRepExpiries,
 ) where
 
 import Cardano.Ledger.Address (accountAddressCredentialL)
@@ -132,7 +135,6 @@ import Data.Text (Text)
 import Data.Word (Word32)
 import GHC.Generics (Generic (..))
 import Lens.Micro as L
-import NoThunks.Class (NoThunks (..))
 import Validation
 
 data ConwayLedgerPredFailure era
@@ -211,7 +213,7 @@ shelleyToConwayLedgerPredFailure ::
   forall era. ShelleyLedgerPredFailure era -> ConwayLedgerPredFailure era
 shelleyToConwayLedgerPredFailure = \case
   UtxowFailure x -> ConwayUtxowFailure x
-  DelegsFailure _ -> error "Impossible: DELEGS has ben removed in Conway"
+  DelegsFailure _ -> error "Impossible: DELEGS has been removed in Conway"
   ShelleyWithdrawalsMissingAccounts x -> ConwayWithdrawalsMissingAccounts x
   ShelleyIncompleteWithdrawals x -> ConwayIncompleteWithdrawals x
 
@@ -230,14 +232,6 @@ deriving instance
   , Show (PredicateFailure (EraRule "GOV" era))
   ) =>
   Show (ConwayLedgerPredFailure era)
-
-instance
-  ( Era era
-  , NoThunks (PredicateFailure (EraRule "UTXOW" era))
-  , NoThunks (PredicateFailure (EraRule "CERTS" era))
-  , NoThunks (PredicateFailure (EraRule "GOV" era))
-  ) =>
-  NoThunks (ConwayLedgerPredFailure era)
 
 instance
   ( Era era
@@ -345,8 +339,6 @@ instance
   renderAssertionViolation = renderDepositEqualsObligationViolation
 
   assertions = shelleyLedgerAssertions @era @ConwayLEDGER
-
--- =======================================
 
 conwayLedgerTransitionTRC ::
   forall (someLEDGER :: Type -> Type) era.

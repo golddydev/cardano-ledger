@@ -16,7 +16,7 @@ import Cardano.Ledger.Alonzo.PParams (
  )
 import Cardano.Ledger.Alonzo.Rules (FailureDescription (..), TagMismatchDescription (..))
 import Cardano.Ledger.Alonzo.Tx (alonzoMinFeeTx)
-import Cardano.Ledger.Alonzo.TxBody (AlonzoTxOut (..), utxoEntrySize)
+import Cardano.Ledger.Alonzo.TxBody (utxoEntrySize)
 import Cardano.Ledger.BaseTypes (SlotNo (..), StrictMaybe (..), boundRational)
 import Cardano.Ledger.Binary (decCBOR, decodeFullAnnotator)
 import Cardano.Ledger.Binary.Plain as Plain (serialize)
@@ -35,8 +35,10 @@ import Cardano.Ledger.Plutus.ExUnits (
 import Cardano.Ledger.Plutus.Language (Language (..))
 import Cardano.Protocol.Crypto (StandardCrypto)
 import Cardano.Protocol.TPraos.BHeader (BHeader)
+import Control.Monad ((>=>))
 import Data.Aeson (eitherDecodeFileStrict)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Encode.Pretty as Aeson
 import qualified Data.ByteString.Base16 as B16
 import qualified Data.ByteString.Base16.Lazy as B16L
 import qualified Data.ByteString.Lazy as BSL
@@ -66,6 +68,31 @@ import Test.Cardano.Protocol.TPraos.Examples (
   ledgerExamplesAlonzo,
  )
 import Test.Hspec (Expectation, Spec, describe, it, shouldBe)
+import Test.Hspec.Golden
+
+goldenBsTest :: String -> BSL.ByteString -> Golden BSL.ByteString
+goldenBsTest goldenFileName actualOutput =
+  Golden
+    { output = actualOutput
+    , encodePretty = show
+    , writeToFile = BSL.writeFile
+    , readFromFile = BSL.readFile
+    , goldenFile = goldenFileName
+    , actualFile = Nothing
+    , failFirstTime = False
+    }
+
+goldenJsonTest :: (Aeson.FromJSON a, Aeson.ToJSON a) => String -> a -> Golden a
+goldenJsonTest goldenFileName actualOutput =
+  Golden
+    { output = actualOutput
+    , encodePretty = show . Aeson.encodePretty
+    , writeToFile = \fp content -> BSL.writeFile fp $ Aeson.encode content
+    , readFromFile = BSL.readFile >=> Aeson.throwDecode
+    , goldenFile = goldenFileName
+    , actualFile = Nothing
+    , failFirstTime = False
+    }
 
 readDataFile :: FilePath -> IO BSL.ByteString
 readDataFile name = getDataFileName name >>= BSL.readFile
@@ -77,7 +104,7 @@ coinsPerUTxOWordLocal = quot minUTxOValueShelleyMA utxoEntrySizeWithoutValLocal
     utxoEntrySizeWithoutValLocal = 29
     Coin minUTxOValueShelleyMA = minUTxO
 
-calcMinUTxO :: AlonzoTxOut AlonzoEra -> Coin
+calcMinUTxO :: TxOut AlonzoEra -> Coin
 calcMinUTxO tout = Coin (utxoEntrySize tout * coinsPerUTxOWordLocal)
 
 tests :: Spec
@@ -96,31 +123,21 @@ goldenUTxOEntryMinAda =
   describe "golden tests - UTxOEntryMinAda" $ do
     it "one policy, one (smallest) name, yes datum hash" $
       calcMinUTxO
-        ( AlonzoTxOut
-            carlAddr
-            (valueFromList (Coin 1407406) [(pid1, smallestName, 1)])
-            (SJust $ hashData @AlonzoEra (Data (PV1.List [])))
+        ( mkBasicTxOut carlAddr (valueFromList (Coin 1407406) [(pid1, smallestName, 1)])
+            & dataHashTxOutL .~ SJust (hashData @AlonzoEra (Data (PV1.List [])))
         )
         `shouldBe` Coin 1655136
     it "one policy, one (smallest) name, no datum hash" $
       calcMinUTxO
-        ( AlonzoTxOut
-            bobAddr
-            (valueFromList (Coin 1407406) [(pid1, smallestName, 1)])
-            SNothing
-        )
+        (mkBasicTxOut bobAddr (valueFromList (Coin 1407406) [(pid1, smallestName, 1)]))
         `shouldBe` Coin 1310316
     it "one policy, one (small) name" $
       calcMinUTxO
-        ( AlonzoTxOut
-            aliceAddr
-            (valueFromList (Coin 1444443) [(pid1, smallName 1, 1)])
-            SNothing
-        )
+        (mkBasicTxOut aliceAddr (valueFromList (Coin 1444443) [(pid1, smallName 1, 1)]))
         `shouldBe` Coin 1344798
     it "one policy, three (small) names" $
       calcMinUTxO
-        ( AlonzoTxOut
+        ( mkBasicTxOut
             aliceAddr
             ( valueFromList
                 (Coin 1555554)
@@ -129,20 +146,15 @@ goldenUTxOEntryMinAda =
                 , (pid1, smallName 3, 1)
                 ]
             )
-            SNothing
         )
         `shouldBe` Coin 1448244
     it "one policy, one (largest) name" $
       calcMinUTxO
-        ( AlonzoTxOut
-            carlAddr
-            (valueFromList (Coin 1555554) [(pid1, largestName 65, 1)])
-            SNothing
-        )
+        (mkBasicTxOut carlAddr (valueFromList (Coin 1555554) [(pid1, largestName 65, 1)]))
         `shouldBe` Coin 1448244
     it "one policy, three (largest) name, with hash" $
       calcMinUTxO
-        ( AlonzoTxOut
+        ( mkBasicTxOut
             carlAddr
             ( valueFromList
                 (Coin 1962961)
@@ -151,36 +163,31 @@ goldenUTxOEntryMinAda =
                 , (pid1, largestName 67, 1)
                 ]
             )
-            (SJust $ hashData @AlonzoEra (Data (PV1.Constr 0 [PV1.Constr 0 []])))
+            & dataHashTxOutL .~ SJust (hashData @AlonzoEra (Data (PV1.Constr 0 [PV1.Constr 0 []])))
         )
         `shouldBe` Coin 2172366
     it "two policies, one (smallest) name" $
       calcMinUTxO
-        ( AlonzoTxOut
+        ( mkBasicTxOut
             aliceAddr
             (valueFromList (Coin 1592591) [(pid1, smallestName, 1), (pid2, smallestName, 1)])
-            SNothing
         )
         `shouldBe` Coin 1482726
     it "two policies, one (smallest) name, with hash" $
       calcMinUTxO
-        ( AlonzoTxOut
+        ( mkBasicTxOut
             aliceAddr
             (valueFromList (Coin 1592591) [(pid1, smallestName, 1), (pid2, smallestName, 1)])
-            (SJust $ hashData @AlonzoEra (Data (PV1.Constr 0 [])))
+            & dataHashTxOutL .~ SJust (hashData @AlonzoEra (Data (PV1.Constr 0 [])))
         )
         `shouldBe` Coin 1827546
     it "two policies, two (small) names" $
       calcMinUTxO
-        ( AlonzoTxOut
-            bobAddr
-            (valueFromList (Coin 1629628) [(pid1, smallName 1, 1), (pid2, smallName 2, 1)])
-            SNothing
-        )
+        (mkBasicTxOut bobAddr (valueFromList (Coin 1629628) [(pid1, smallName 1, 1), (pid2, smallName 2, 1)]))
         `shouldBe` Coin 1517208
     it "three policies, ninety-six (small) names" $
       calcMinUTxO
-        ( AlonzoTxOut
+        ( mkBasicTxOut
             aliceAddr
             ( let f i c = (i, smallName c, 1)
                in valueFromList
@@ -191,7 +198,6 @@ goldenUTxOEntryMinAda =
                     , c <- cs
                     ]
             )
-            SNothing
         )
         `shouldBe` Coin 6896400
     it "utxo entry size of ada-only" $
@@ -199,17 +205,19 @@ goldenUTxOEntryMinAda =
       -- with the old parameter minUTxOValue.
       -- If we wish to keep the ada-only, no datum hash, minimum value nearly the same,
       -- we can divide minUTxOValue by 29 and round.
-      utxoEntrySize @AlonzoEra (AlonzoTxOut aliceAddr mempty SNothing) `shouldBe` 29
+      utxoEntrySize @AlonzoEra (mkBasicTxOut aliceAddr mempty) `shouldBe` 29
 
 goldenCborSerialization :: Spec
 goldenCborSerialization =
   describe "golden tests - CBOR serialization" $ do
     it "Alonzo Block" $ do
-      expected <- readDataFile "golden/block.cbor"
-      Plain.serialize (pleBlock ledgerExamplesAlonzo) `shouldBe` expected
+      goldenFileName <- getDataFileName "golden/block.cbor"
+      return $ goldenBsTest goldenFileName $ Plain.serialize (pleBlock ledgerExamplesAlonzo)
     it "Alonzo Tx" $ do
-      expected <- readDataFile "golden/tx.cbor"
-      Plain.serialize (leTx $ pleLedgerExamples ledgerExamplesAlonzo) `shouldBe` expected
+      goldenFileName <- getDataFileName "golden/tx.cbor"
+      return $
+        goldenBsTest goldenFileName $
+          Plain.serialize (leTx $ pleLedgerExamples ledgerExamplesAlonzo)
 
 goldenJsonSerialization :: Spec
 goldenJsonSerialization =
@@ -233,34 +241,34 @@ goldenJsonSerialization =
                 , invalidHereafter = SJust (SlotNo 12354)
                 }
             ]
-      expected <- Aeson.throwDecode =<< readDataFile "golden/ValidityInterval.json"
-      Aeson.toJSON value `shouldBe` expected
+      goldenFileName <- getDataFileName "golden/ValidityInterval.json"
+      return $ goldenJsonTest goldenFileName $ Aeson.toJSON value
     it "IsValid" $ do
       let value =
             [ IsValid True
             , IsValid False
             ]
-      expected <- Aeson.throwDecode =<< readDataFile "golden/IsValid.json"
-      Aeson.toJSON value `shouldBe` expected
+      goldenFileName <- getDataFileName "golden/IsValid.json"
+      return $ goldenJsonTest goldenFileName $ Aeson.toJSON value
     it "FailureDescription" $ do
       let value =
             [ PlutusFailure "A description" "A reconstruction"
             ]
-      expected <- Aeson.throwDecode =<< readDataFile "golden/FailureDescription.json"
-      Aeson.toJSON value `shouldBe` expected
+      goldenFileName <- getDataFileName "golden/FailureDescription.json"
+      return $ goldenJsonTest goldenFileName $ Aeson.toJSON value
     it "TagMismatchDescription" $ do
       let value =
             [ PassedUnexpectedly
             , FailedUnexpectedly (NE.fromList [PlutusFailure "A description" "A reconstruction"])
             ]
-      expected <- Aeson.throwDecode =<< readDataFile "golden/TagMismatchDescription.json"
-      Aeson.toJSON value `shouldBe` expected
+      goldenFileName <- getDataFileName "golden/TagMismatchDescription.json"
+      return $ goldenJsonTest goldenFileName $ Aeson.toJSON value
 
 goldenGenesisSerialization :: Spec
 goldenGenesisSerialization =
   describe "golden tests - Alonzo Genesis serialization" $ do
     it "JSON deserialization" $ do
-      let file = "golden/mainnet-alonzo-genesis.json"
+      file <- getDataFileName "golden/mainnet-alonzo-genesis.json"
       deserialized <- (eitherDecodeFileStrict file :: IO (Either String AlonzoGenesis))
       deserialized `shouldBe` Right expectedGenesis
 

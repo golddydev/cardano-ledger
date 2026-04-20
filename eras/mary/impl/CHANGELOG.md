@@ -1,8 +1,9 @@
 # Version history for `cardano-ledger-mary`
 
-## 1.10.0.1
+## 1.10.1.0
 
-*
+* Add `ApplyTick` instance for `MaryEra`
+* Add `EraForecast` and `ShelleyEraForecast` instances for `MaryEra`.
 
 ## 1.10.0.0
 

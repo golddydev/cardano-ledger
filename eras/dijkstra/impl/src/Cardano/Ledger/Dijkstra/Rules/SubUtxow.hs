@@ -19,19 +19,19 @@ module Cardano.Ledger.Dijkstra.Rules.SubUtxow (
   DijkstraSUBUTXOW,
   DijkstraSubUtxowPredFailure (..),
   DijkstraSubUtxowEvent (..),
-  SubUtxowEnv (..),
 ) where
 
 import Cardano.Crypto.Hash (ByteString)
+import Cardano.Ledger.Allegra.Rules (AllegraUtxoPredFailure)
 import Cardano.Ledger.Alonzo.Plutus.Context (EraPlutusContext)
-import Cardano.Ledger.Alonzo.Rules (AlonzoUtxowPredFailure)
+import Cardano.Ledger.Alonzo.Rules (AlonzoUtxoPredFailure, AlonzoUtxowPredFailure)
 import qualified Cardano.Ledger.Alonzo.Rules as Alonzo (
   checkScriptIntegrityHash,
   hasExactSetOfRedeemers,
   missingRequiredDatums,
  )
 import Cardano.Ledger.Alonzo.UTxO (AlonzoEraUTxO (..), AlonzoScriptsNeeded)
-import Cardano.Ledger.Babbage.Rules (BabbageUtxowPredFailure)
+import Cardano.Ledger.Babbage.Rules (BabbageUtxoPredFailure, BabbageUtxowPredFailure)
 import qualified Cardano.Ledger.Babbage.Rules as Babbage (
   validateFailedBabbageScripts,
   validateScriptsWellFormedTxOuts,
@@ -47,11 +47,11 @@ import Cardano.Ledger.Conway.Core
 import Cardano.Ledger.Conway.Governance
 import Cardano.Ledger.Conway.Rules (
   ConwayUtxowPredFailure,
-  UtxoEnv (..),
   alonzoToConwayUtxowPredFailure,
   babbageToConwayUtxowPredFailure,
   shelleyToConwayUtxowPredFailure,
  )
+import Cardano.Ledger.Credential (Credential, credScriptHash)
 import Cardano.Ledger.Dijkstra.Era (
   DijkstraEra,
   DijkstraSUBUTXOW,
@@ -62,35 +62,27 @@ import Cardano.Ledger.Dijkstra.Rules.Utxow (
   DijkstraUtxowPredFailure (..),
   conwayToDijkstraUtxowPredFailure,
  )
+import Cardano.Ledger.Dijkstra.TxBody (DijkstraEraTxBody (..))
 import Cardano.Ledger.Keys (VKey)
 import Cardano.Ledger.Rules.ValidationMode
-import Cardano.Ledger.Shelley.LedgerState (UTxOState, utxosUtxo)
-import Cardano.Ledger.Shelley.Rules (ShelleyUtxowPredFailure)
+import Cardano.Ledger.Shelley.LedgerState (UTxOState)
+import Cardano.Ledger.Shelley.Rules (ShelleyUtxoPredFailure, ShelleyUtxowPredFailure)
 import qualified Cardano.Ledger.Shelley.Rules as Shelley (
   validateMetadata,
   validateNeededWitnesses,
   validateVerifiedWits,
  )
-import Cardano.Ledger.State (CertState, EraUTxO (..), ScriptsProvided (..))
+import Cardano.Ledger.State (EraCertState, EraStake, EraUTxO (..), ScriptsProvided (..))
 import Cardano.Ledger.TxIn (TxIn)
 import Control.DeepSeq (NFData)
 import Control.State.Transition.Extended
 import Data.List.NonEmpty (NonEmpty)
+import qualified Data.Map.Strict as Map
 import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Set.NonEmpty (NonEmptySet)
 import GHC.Generics (Generic)
 import Lens.Micro
-import NoThunks.Class (
-  InspectHeapNamed (..),
-  NoThunks (..),
- )
-
-data SubUtxowEnv era = SubUtxowEnv
-  { sueSlot :: SlotNo
-  , suePParams :: PParams era
-  , sueCertState :: CertState era
-  , sueScriptsProvided :: ScriptsProvided era
-  }
 
 data DijkstraSubUtxowPredFailure era
   = SubUtxoFailure (PredicateFailure (EraRule "SUBUTXO" era))
@@ -134,6 +126,8 @@ data DijkstraSubUtxowPredFailure era
     SubScriptIntegrityHashMismatch
       (Mismatch RelEQ (StrictMaybe ScriptIntegrityHash))
       (StrictMaybe ByteString)
+  | -- | Guard credentials with incorrect datum presence in requiredTopLevelGuards
+    SubMalformedGuardDatums (NonEmptySet (Credential Guard))
   deriving (Generic)
 
 deriving stock instance
@@ -147,11 +141,6 @@ deriving stock instance
   , Show (PredicateFailure (EraRule "SUBUTXO" era))
   ) =>
   Show (DijkstraSubUtxowPredFailure era)
-
-deriving via
-  InspectHeapNamed "DijkstraSubUtxowPred" (DijkstraSubUtxowPredFailure era)
-  instance
-    NoThunks (DijkstraSubUtxowPredFailure era)
 
 instance
   ( ConwayEraScript era
@@ -208,6 +197,7 @@ instance
   , BabbageEraTxOut era
   , ConwayEraGov era
   , ConwayEraTxBody era
+  , DijkstraEraTxBody era
   , EraPlutusContext era
   , EraRule "SUBUTXO" era ~ DijkstraSUBUTXO era
   , EraRule "SUBUTXOW" era ~ DijkstraSUBUTXOW era
@@ -215,53 +205,90 @@ instance
   , InjectRuleFailure "SUBUTXOW" AlonzoUtxowPredFailure era
   , InjectRuleFailure "SUBUTXOW" ShelleyUtxowPredFailure era
   , InjectRuleFailure "SUBUTXOW" BabbageUtxowPredFailure era
+  , InjectRuleFailure "SUBUTXOW" DijkstraSubUtxowPredFailure era
   , ScriptsNeeded era ~ AlonzoScriptsNeeded era
   ) =>
   STS (DijkstraSUBUTXOW era)
   where
   type State (DijkstraSUBUTXOW era) = UTxOState era
   type Signal (DijkstraSUBUTXOW era) = Tx SubTx era
-  type Environment (DijkstraSUBUTXOW era) = SubUtxowEnv era
+  type Environment (DijkstraSUBUTXOW era) = SubUtxoEnv era
   type BaseM (DijkstraSUBUTXOW era) = ShelleyBase
   type PredicateFailure (DijkstraSUBUTXOW era) = DijkstraSubUtxowPredFailure era
   type Event (DijkstraSUBUTXOW era) = DijkstraSubUtxowEvent era
 
   transitionRules = [dijkstraSubUtxowTransition @era]
 
+-- | Validate that requiredTopLevelGuards datums are consistent with the credential type:
+-- Plutus script credentials must have a datum, key/native script credentials must not.
+validateGuardDatums ::
+  forall era.
+  DijkstraEraTxBody era =>
+  ScriptsProvided era ->
+  TxBody SubTx era ->
+  Test (DijkstraSubUtxowPredFailure era)
+validateGuardDatums (ScriptsProvided scripts) txBody =
+  failureOnNonEmptySet malformed SubMalformedGuardDatums
+  where
+    malformed =
+      Map.foldlWithKey' accum mempty (txBody ^. requiredTopLevelGuardsL)
+    accum acc cred mbDatum =
+      case credScriptHash cred of
+        Nothing ->
+          -- Key hash: datum must be SNothing
+          case mbDatum of
+            SNothing -> acc
+            SJust _ -> Set.insert cred acc
+        Just scriptHash ->
+          case Map.lookup scriptHash scripts of
+            Just script
+              | isNativeScript script ->
+                  -- Native script: datum must be SNothing
+                  case mbDatum of
+                    SNothing -> acc
+                    SJust _ -> Set.insert cred acc
+              | otherwise ->
+                  -- Plutus script: datum must be SJust
+                  case mbDatum of
+                    SJust _ -> acc
+                    SNothing -> Set.insert cred acc
+            Nothing -> acc
+
 dijkstraSubUtxowTransition ::
   forall era.
   ( AlonzoEraTx era
   , AlonzoEraUTxO era
-  , BabbageEraTxOut era
+  , DijkstraEraTxBody era
   , EraRule "SUBUTXO" era ~ DijkstraSUBUTXO era
   , EraRule "SUBUTXOW" era ~ DijkstraSUBUTXOW era
   , Embed (EraRule "SUBUTXO" era) (DijkstraSUBUTXOW era)
   , InjectRuleFailure "SUBUTXOW" AlonzoUtxowPredFailure era
   , InjectRuleFailure "SUBUTXOW" ShelleyUtxowPredFailure era
   , InjectRuleFailure "SUBUTXOW" BabbageUtxowPredFailure era
+  , InjectRuleFailure "SUBUTXOW" DijkstraSubUtxowPredFailure era
   , ScriptsNeeded era ~ AlonzoScriptsNeeded era
   ) =>
   TransitionRule (EraRule "SUBUTXOW" era)
 dijkstraSubUtxowTransition = do
-  TRC (SubUtxowEnv slot pp certState scriptsProvided, utxoState, tx) <- judgmentContext
-  let utxo = utxosUtxo utxoState
-      txBody = tx ^. bodyTxL
+  TRC (env@(SubUtxoEnv _ pp certState scriptsProvided originalUtxo _), utxoState, tx) <-
+    judgmentContext
+  let txBody = tx ^. bodyTxL
       witsKeyHashes = keyHashWitnessesTxWits (tx ^. witsTxL)
 
   {- ∀[ (vk , σ) ∈ vKeySigs ] isSigned vk (txidBytes txId) σ -}
   runTestOnSignal $ Shelley.validateVerifiedWits tx
 
-  let scriptsNeeded = getScriptsNeeded utxo txBody
+  let scriptsNeeded = getScriptsNeeded originalUtxo txBody
       scriptHashesNeeded = getScriptsHashesNeeded scriptsNeeded
 
   {- ∀[ s ∈ p1ScriptsNeeded ] validP1Script vKeyHashesProvided txVldt s -}
   runTest $ Babbage.validateFailedBabbageScripts tx scriptsProvided scriptHashesNeeded
 
   {- vKeyHashesNeeded ⊆ vKeyHashesProvided -}
-  runTest $ Shelley.validateNeededWitnesses witsKeyHashes certState utxo txBody
+  runTest $ Shelley.validateNeededWitnesses witsKeyHashes certState originalUtxo txBody
 
   {- dataHashesNeeded ⊆ mapˢ hash dataProvided -}
-  runTest $ Alonzo.missingRequiredDatums utxo tx
+  runTest $ Alonzo.missingRequiredDatums originalUtxo tx
 
   {- txADhash ≡ map hash txAuxData -}
   runTestOnSignal $ Shelley.validateMetadata pp tx
@@ -277,14 +304,25 @@ dijkstraSubUtxowTransition = do
       (tx ^. witsTxL . scriptTxWitsL)
       (tx ^. bodyTxL . outputsTxBodyL)
 
-  trans @(EraRule "SUBUTXO" era) $ TRC (UtxoEnv slot pp certState, utxoState, tx)
+  runTest $ validateGuardDatums scriptsProvided txBody
+
+  trans @(EraRule "SUBUTXO" era) $ TRC (env, utxoState, tx)
 
 instance
-  ( ConwayEraGov era
-  , ConwayEraTxBody era
+  ( EraTx era
+  , EraStake era
+  , EraCertState era
+  , AlonzoEraTxWits era
+  , ConwayEraGov era
+  , DijkstraEraTxBody era
   , EraPlutusContext era
   , EraRule "SUBUTXO" era ~ DijkstraSUBUTXO era
   , EraRule "SUBUTXOW" era ~ DijkstraSUBUTXOW era
+  , InjectRuleFailure "SUBUTXO" ShelleyUtxoPredFailure era
+  , InjectRuleFailure "SUBUTXO" AllegraUtxoPredFailure era
+  , InjectRuleFailure "SUBUTXO" AlonzoUtxoPredFailure era
+  , InjectRuleFailure "SUBUTXO" BabbageUtxoPredFailure era
+  , InjectRuleFailure "SUBUTXO" DijkstraUtxoPredFailure era
   ) =>
   Embed (DijkstraSUBUTXO era) (DijkstraSUBUTXOW era)
   where
@@ -316,6 +354,7 @@ instance
       SubMalformedScriptWitnesses x -> Sum SubMalformedScriptWitnesses 14 !> To x
       SubMalformedReferenceScripts x -> Sum SubMalformedReferenceScripts 15 !> To x
       SubScriptIntegrityHashMismatch x y -> Sum SubScriptIntegrityHashMismatch 16 !> To x !> To y
+      SubMalformedGuardDatums x -> Sum SubMalformedGuardDatums 17 !> To x
 
 instance
   ( ConwayEraScript era
@@ -341,6 +380,7 @@ instance
     14 -> SumD SubMalformedScriptWitnesses <! From
     15 -> SumD SubMalformedReferenceScripts <! From
     16 -> SumD SubScriptIntegrityHashMismatch <! From <! From
+    17 -> SumD SubMalformedGuardDatums <! From
     n -> Invalid n
 
 dijkstraUtxowToDijkstraSubUtxowPredFailure ::
@@ -369,3 +409,4 @@ dijkstraUtxowToDijkstraSubUtxowPredFailure = \case
   MalformedScriptWitnesses hs -> SubMalformedScriptWitnesses hs
   MalformedReferenceScripts hs -> SubMalformedReferenceScripts hs
   ScriptIntegrityHashMismatch mm f -> SubScriptIntegrityHashMismatch mm f
+  MissingRequiredGuards _ -> error "Impossible: `MissingRequiredGuards` for SUBUTXOW"

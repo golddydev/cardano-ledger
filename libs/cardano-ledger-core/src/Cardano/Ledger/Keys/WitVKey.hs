@@ -15,17 +15,14 @@ module Cardano.Ledger.Keys.WitVKey (
 
 import Cardano.Crypto.DSIGN.Class (
   SignedDSIGN,
-  encodeSignedDSIGN,
  )
 import Cardano.Ledger.Binary (
-  Annotator,
   DecCBOR (..),
   EncCBOR (..),
-  shelleyProtVer,
-  toPlainDecoder,
+  decodeRecordNamed,
+  encodeListLen,
  )
-import Cardano.Ledger.Binary.Coders (Decode (..), decode, (<!))
-import qualified Cardano.Ledger.Binary.Plain as Plain
+import Cardano.Ledger.Binary.Crypto (decodeSignedDSIGN)
 import Cardano.Ledger.Hashes (
   EraIndependentTxBody,
   HASH,
@@ -71,24 +68,16 @@ instance Typeable kr => Ord (WitVKey kr) where
     -- compliance with Ord laws.
     comparing wvkKeyHash x y <> comparing (hashTxBodySignature . wvkSignature) x y
 
-instance Typeable kr => Plain.ToCBOR (WitVKey kr) where
-  toCBOR WitVKeyInternal {wvkKey, wvkSignature} =
-    Plain.encodeListLen 2
-      <> Plain.toCBOR wvkKey
-      <> encodeSignedDSIGN wvkSignature
-
-instance Typeable kr => Plain.FromCBOR (WitVKey kr) where
-  fromCBOR = toPlainDecoder Nothing shelleyProtVer decCBOR
-  {-# INLINE fromCBOR #-}
-
-instance Typeable kr => EncCBOR (WitVKey kr)
+instance EncCBOR (WitVKey kr) where
+  encCBOR (WitVKey k sig) =
+    encodeListLen 2
+      <> encCBOR k
+      <> encCBOR sig
 
 instance Typeable kr => DecCBOR (WitVKey kr) where
-  decCBOR = decode (RecD WitVKey <! From <! From)
-  {-# INLINE decCBOR #-}
-
-instance Typeable kr => DecCBOR (Annotator (WitVKey kr)) where
-  decCBOR = pure <$> decCBOR
+  decCBOR =
+    decodeRecordNamed "WitVKey" (const 2) $
+      WitVKey <$> decCBOR <*> decodeSignedDSIGN
   {-# INLINE decCBOR #-}
 
 pattern WitVKey ::

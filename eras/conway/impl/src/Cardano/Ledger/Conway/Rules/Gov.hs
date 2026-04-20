@@ -51,8 +51,6 @@ import Cardano.Ledger.BaseTypes (
 import Cardano.Ledger.Binary (
   DecCBOR (..),
   EncCBOR (..),
-  FromCBOR (..),
-  ToCBOR (..),
   internMap,
   internSet,
  )
@@ -146,7 +144,6 @@ import Data.Set.NonEmpty (NonEmptySet)
 import GHC.Generics (Generic)
 import Lens.Micro
 import qualified Lens.Micro as L
-import NoThunks.Class (NoThunks (..))
 import Validation (failureUnless)
 
 data GovEnv era = GovEnv
@@ -235,8 +232,6 @@ instance InjectRuleEvent "GOV" ConwayGovEvent ConwayEra
 
 instance EraPParams era => NFData (ConwayGovPredFailure era)
 
-instance EraPParams era => NoThunks (ConwayGovPredFailure era)
-
 instance EraPParams era => DecCBOR (ConwayGovPredFailure era) where
   decCBOR = decode $ Summands "ConwayGovPredFailure" $ \case
     0 -> SumD GovActionsDoNotExist <! From
@@ -301,12 +296,6 @@ instance EraPParams era => EncCBOR (ConwayGovPredFailure era) where
         Sum TreasuryWithdrawalReturnAccountsDoNotExist 17 !> To accounts
       UnelectedCommitteeVoters committee ->
         Sum UnelectedCommitteeVoters 18 !> To committee
-
-instance EraPParams era => ToCBOR (ConwayGovPredFailure era) where
-  toCBOR = toEraCBOR @era
-
-instance EraPParams era => FromCBOR (ConwayGovPredFailure era) where
-  fromCBOR = fromEraCBOR @era
 
 data ConwayGovEvent era
   = GovNewProposals !TxId !(Proposals era)
