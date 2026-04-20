@@ -70,6 +70,155 @@ pub struct RewardAccount {
 #[derive(Debug, Clone)]
 pub struct Coin(pub u64);
 
+// ============================================================================
+// Value / MultiAsset — Sorting and PlutusData Encoding
+// ============================================================================
+//
+// Reference: eras/alonzo/impl/src/Cardano/Ledger/Alonzo/Plutus/TxInfo.hs:292-317
+//            eras/mary/impl/src/Cardano/Ledger/Mary/Value.hs
+//            libs/cardano-ledger-core/src/Cardano/Ledger/Plutus/TxInfo.hs:182-183
+//
+// ## Ledger Value → Plutus Value translation
+//
+// The Plutus `Value` is: `Map CurrencySymbol (Map TokenName Integer)`
+// implemented as a nested `AssocMap` (a list of pairs — preserves insertion order,
+// does NOT re-sort).
+//
+// ```haskell
+// transValue :: MaryValue -> PV1.Value
+// transValue (MaryValue c m) = transCoinToValue c <> transMultiAsset m
+//
+// transCoinToValue :: Coin -> PV1.Value
+// transCoinToValue (Coin c) = PV1.singleton PV1.adaSymbol PV1.adaToken c
+// ```
+//
+// So the resulting Value is:  ADA entry (adaSymbol="", adaToken="") merged with
+// the multi-asset entries via Plutus Value's Semigroup (<>).
+//
+// ## transMultiAsset — the core conversion
+//
+// ```haskell
+// transMultiAsset :: MultiAsset -> PV1.Value
+// transMultiAsset (MultiAsset m) =
+//     PV1.Value (toAssocMap transPolicyID (toAssocMap transAssetName id) m)
+//   where
+//     toAssocMap transKey transVal =
+//       PV2.unsafeFromList . Map.foldrWithKey' accWithKey []
+//       where
+//         accWithKey key value !acc = (transKey key, transVal value) : acc
+// ```
+//
+// ### Sorting mechanism:
+//   1. Ledger stores MultiAsset as `Map PolicyID (Map AssetName Integer)`
+//      — Haskell `Map` keeps keys in ascending `Ord` order.
+//   2. `Map.foldrWithKey'` folds right-to-left (descending key order).
+//   3. Each pair is prepended via `:` (cons) → reverses back to ascending order.
+//   4. `PV2.unsafeFromList` wraps the list as-is — NO re-sorting.
+//
+// ### Result: entries are in ascending `Ord` order of their ledger keys:
+//   - **PolicyID** = ScriptHash = Blake2b_224 (28 bytes) → sorted lexicographically
+//     as raw bytes
+//   - **AssetName** = ShortByteString (≤32 bytes) → sorted lexicographically as raw
+//     bytes (shorter strings sort before longer ones if they are a prefix, per
+//     ShortByteString's Ord)
+//
+// ## Mint Value (transMintValue)
+//
+// **PlutusV1/V2** (hysterical raisins — legacy compat):
+// ```haskell
+// transMintValue :: MultiAsset -> PV1.Value
+// transMintValue m = transCoinToValue zero <> transMultiAsset m
+// ```
+// Prepends an explicit ADA=0 entry. Same sorting as transValue for assets.
+// Mint values CAN have negative integers (burns).
+//
+// **PlutusV3** (Conway):
+// ```haskell
+// transMintValue :: MultiAsset -> PV3.MintValue
+// transMintValue = PV3.UnsafeMintValue . PV1.getValue . Alonzo.transMultiAsset
+// ```
+// Reuses Alonzo's transMultiAsset, wraps in PV3.MintValue. Does NOT prepend
+// ADA=0 (MintValue is a separate type, not Value). Same asset ordering.
+//
+// ## IMPORTANT: Plutus AssocMap vs CBOR Canonical ordering
+//
+// These are TWO DIFFERENT sorting concerns:
+//
+// 1. **Plutus AssocMap ordering** (what scripts see):
+//    - AssocMap is just a list of (key, value) pairs — `unsafeFromList` preserves
+//      the insertion order without re-sorting.
+//    - The ledger constructs these in ascending ledger-Ord order (as described above).
+//    - This is what Plutus scripts observe when they pattern-match on Value.
+//
+// 2. **CBOR canonical encoding** (RFC 7049 §3.9):
+//    - Requires map keys sorted by: encoded byte length first, then lexicographic.
+//    - This is NOT what Plutus script contexts use.
+//
+// 3. **The actual sort is plain lexicographic on raw bytes, NOT length-first.**
+//    PolicyIDs (28-byte hashes) and AssetNames (≤32 bytes) are compared byte-by-byte
+//    in ascending order. This is Haskell's derived `Ord` on ByteString/ShortByteString,
+//    which is simple lexicographic comparison — NOT CBOR canonical (length-first).
+//
+// ## Data flow: Value → Script Evaluator (NO CBOR serialization in between)
+//
+// Reference: libs/cardano-ledger-core/src/Cardano/Ledger/Plutus/Language.hs:409-555
+//
+// The path from TxInfo to the Plutus evaluator is:
+//
+//   1. TxInfo (containing Value with AssocMap) is wrapped into PlutusScriptContext
+//   2. Stored in PlutusArgs as a Haskell value in memory (not serialized)
+//   3. `toData` (from plutus-ledger-api) converts the Haskell value to `P.Data`
+//      directly in memory — this preserves the AssocMap list order exactly
+//   4. The `[P.Data]` is passed directly to `evaluateScriptRestricting`
+//
+// ```haskell
+// -- V1/V2:
+// evaluatePlutusRunnable pv vm ec exBudget (PlutusRunnable rs) =
+//   PV1.evaluateScriptRestricting (toMajorProtocolVersion pv) vm ec exBudget rs
+//     . legacyPlutusArgsToData    -- calls toData on ScriptContext → [P.Data]
+//     . unPlutusV1Args
+//
+// -- V3:
+// evaluatePlutusRunnable pv vm ec exBudget (PlutusRunnable rs) =
+//   PV3.evaluateScriptRestricting (toMajorProtocolVersion pv) vm ec exBudget rs
+//     . PV3.toData                -- ScriptContext → P.Data
+//     . unPlutusV3Args
+// ```
+//
+// **NO CBOR encoding/decoding occurs between TxInfo construction and evaluation.**
+// The `toData` function converts Haskell types to `P.Data` (an algebraic data type
+// with Constr/Map/List/I/B constructors) without any serialization step.
+// The Plutus evaluator receives this `P.Data` value directly.
+//
+// Therefore: the sort order visible to scripts is exactly the order produced by
+// `transMultiAsset` — ascending lexicographic on raw bytes, for all Plutus versions.
+//
+// ============================================================================
+// Transaction Inputs — Sorting
+// ============================================================================
+//
+// Reference: eras/alonzo/impl/src/Cardano/Ledger/Alonzo/Plutus/TxInfo.hs:109
+//            libs/cardano-ledger-core/src/Cardano/Ledger/TxIn.hs:59-78
+//
+// Inputs and reference inputs are extracted from a `Set TxIn` via `Set.toList`,
+// which returns elements in ascending `Ord` order.
+//
+// ```haskell
+// inputs <- mapM (transTxInInfo ltiUTxO) (Set.toList (txBody ^. inputsTxBodyL))
+// refInputs <- mapM (transTxInInfoV2 ltiUTxO) (Set.toList (txBody ^. referenceInputsTxBodyL))
+// ```
+//
+// TxIn ordering (`data TxIn = TxIn !TxId !TxIx` with derived Ord):
+//   1. Primary key: TxId (= SafeHash = Blake2b_256, 32 bytes) — compared
+//      lexicographically as raw bytes.
+//   2. Secondary key: TxIx (= Word16) — compared numerically.
+//
+// This is consistent across ALL Plutus versions (V1, V2, V3) and all eras
+// (Alonzo, Babbage, Conway).
+//
+// Outputs are NOT sorted — they preserve the original transaction body order
+// (sequential `F.toList` on the outputs field).
+
 #[derive(Debug, Clone)]
 pub struct Value {
     pub coin: Coin,
@@ -820,8 +969,437 @@ pub struct TranslatedCredential;
 pub struct TranslatedScriptPurpose;
 #[derive(Debug, Clone)]
 pub struct TranslatedVote;
+
+// ============================================================================
+// Governance Proposals — PlutusData Encoding
+// ============================================================================
+//
+// Reference: eras/conway/impl/src/Cardano/Ledger/Conway/TxInfo.hs
+//            eras/conway/impl/src/Cardano/Ledger/Conway/Governance/Procedures.hs
+//            eras/conway/impl/src/Cardano/Ledger/Conway/PParams.hs
+//            libs/cardano-ledger-core/src/Cardano/Ledger/Plutus/ToPlutusData.hs
+//            libs/cardano-ledger-core/src/Cardano/Ledger/Plutus/CostModels.hs
+//
+// ## Translation Pipeline (transProposal)
+//
+// The ledger's `ProposalProcedure` is translated to `PV3.ProposalProcedure`
+// via `transProposal` (TxInfo.hs:706-716):
+//
+// ```haskell
+// transProposal proxy ProposalProcedure {pProcDeposit, pProcReturnAddr, pProcGovAction} =
+//   PV3.ProposalProcedure
+//     { ppDeposit          = transCoinToLovelace pProcDeposit
+//     , ppReturnAddr       = transAccountAddress pProcReturnAddr
+//     , ppGovernanceAction = transGovAction proxy pProcGovAction
+//     }
+// ```
+//
+// NOTE: The `pProcAnchor` field is intentionally omitted in the Plutus translation.
+
+/// PV3.ProposalProcedure — Plutus V3 view of a governance proposal
+///
+/// Reference: eras/conway/impl/src/Cardano/Ledger/Conway/TxInfo.hs:706-716
 #[derive(Debug, Clone)]
-pub struct TranslatedProposal;
+pub struct TranslatedProposal {
+    /// Deposit amount in lovelace (transCoinToLovelace)
+    pub deposit: u64,
+    /// Return address for the deposit (transAccountAddress)
+    pub return_addr: TranslatedCredential,
+    /// The governance action being proposed (transGovAction)
+    pub governance_action: TranslatedGovAction,
+}
+
+/// PV3.GovernanceAction — all seven governance action variants
+///
+/// Reference: eras/conway/impl/src/Cardano/Ledger/Conway/TxInfo.hs:654-689
+///            eras/conway/impl/src/Cardano/Ledger/Conway/Governance/Procedures.hs:794-834
+///
+/// ```haskell
+/// transGovAction proxy = \case
+///   ParameterChange   pGovActionId ppu govPolicy -> ...
+///   HardForkInitiation pGovActionId protVer      -> ...
+///   TreasuryWithdrawals withdrawals govPolicy    -> ...
+///   NoConfidence       pGovActionId              -> ...
+///   UpdateCommittee    pGovActionId ccRemove ccAdd threshold -> ...
+///   NewConstitution    pGovActionId constitution  -> ...
+///   InfoAction                                    -> ...
+/// ```
+#[derive(Debug, Clone)]
+pub enum TranslatedGovAction {
+    /// ParameterChange: previous action id, changed parameters, guardrails script hash
+    ParameterChange(
+        Option<TranslatedGovActionId>,
+        ChangedParameters,
+        Option<ScriptHash>,
+    ),
+    /// HardForkInitiation: previous action id, target protocol version
+    HardForkInitiation(Option<TranslatedGovActionId>, TranslatedProtVer),
+    /// TreasuryWithdrawals: map of (credential → lovelace), guardrails script hash
+    TreasuryWithdrawals(
+        Vec<(TranslatedCredential, u64)>,
+        Option<ScriptHash>,
+    ),
+    /// NoConfidence: previous action id
+    NoConfidence(Option<TranslatedGovActionId>),
+    /// UpdateCommittee: previous action id, members to remove, members to add (with epoch), threshold
+    UpdateCommittee(
+        Option<TranslatedGovActionId>,
+        Vec<TranslatedCredential>,                 // cold committee credentials to remove
+        Vec<(TranslatedCredential, u64)>,          // cold committee credentials to add → epoch
+        (i64, i64),                                // rational threshold (numerator, denominator)
+    ),
+    /// NewConstitution: previous action id, constitution
+    NewConstitution(Option<TranslatedGovActionId>, TranslatedConstitution),
+    /// InfoAction: no parameters
+    InfoAction,
+}
+
+/// PV3.GovernanceActionId
+///
+/// ```haskell
+/// transGovActionId GovActionId {gaidTxId, gaidGovActionIx} =
+///   PV3.GovernanceActionId
+///     { gaidTxId        = transTxId gaidTxId
+///     , gaidGovActionIx = toInteger (unGovActionIx gaidGovActionIx)
+///     }
+/// ```
+#[derive(Debug, Clone)]
+pub struct TranslatedGovActionId {
+    pub tx_id: TxId,
+    pub gov_action_ix: u64,
+}
+
+/// Translated protocol version for HardForkInitiation
+#[derive(Debug, Clone)]
+pub struct TranslatedProtVer {
+    pub major: u64,
+    pub minor: u64,
+}
+
+/// Translated constitution for NewConstitution
+#[derive(Debug, Clone)]
+pub struct TranslatedConstitution {
+    pub constitution_script: Option<ScriptHash>,
+}
+
+// ============================================================================
+// ChangedParameters — PParamsUpdate to PlutusData encoding
+// ============================================================================
+//
+// Reference: eras/conway/impl/src/Cardano/Ledger/Conway/PParams.hs:198-220
+//            eras/conway/impl/src/Cardano/Ledger/Conway/TxInfo.hs:773-782
+//
+// ## How PParamsUpdate becomes ChangedParameters
+//
+// 1. `transGovAction` calls `toPlutusChangedParameters proxy ppu`
+// 2. Which does: `PV3.ChangedParameters (PV3.dataToBuiltinData (toPlutusData ppu))`
+// 3. `toPlutusData` on `PParamsUpdate` produces a **PlutusData Map** where:
+//    - Keys: Integer tags (Word) identifying each protocol parameter
+//    - Values: PlutusData-encoded parameter values
+//    - Only parameters that are actually set (SJust) appear in the map
+//
+// ```haskell
+// instance ConwayEraPParams era => ToPlutusData (PParamsUpdate era) where
+//   toPlutusData ppu = P.Map $ mapMaybe ppToData (eraPParams @era)
+//     where
+//       ppToData PParam {ppUpdate} = do
+//         PParamUpdate {ppuTag, ppuLens} <- ppUpdate
+//         t <- strictMaybeToMaybe $ ppu ^. ppuLens
+//         pure (P.I (toInteger @Word ppuTag), toPlutusData t)
+// ```
+//
+// ## Parameter Tag Table (Conway era)
+//
+// | Tag | Parameter               | Haskell Type           | PlutusData Encoding              |
+// |-----|-------------------------|------------------------|----------------------------------|
+// |  0  | txFeePerByte            | CoinPerByte            | I (integer via CompactForm Coin) |
+// |  1  | txFeeFixed              | CompactForm Coin       | I (integer)                      |
+// |  2  | maxBBSize               | Word32                 | I (integer)                      |
+// |  3  | maxTxSize               | Word32                 | I (integer)                      |
+// |  4  | maxBHSize               | Word16                 | I (integer)                      |
+// |  5  | keyDeposit              | CompactForm Coin       | I (integer)                      |
+// |  6  | poolDeposit             | CompactForm Coin       | I (integer)                      |
+// |  7  | eMax                    | EpochInterval          | I (integer)                      |
+// |  8  | nOpt                    | Word16                 | I (integer)                      |
+// |  9  | a0                      | NonNegativeInterval    | List [I num, I denom]            |
+// | 10  | rho                     | UnitInterval           | List [I num, I denom]            |
+// | 11  | tau                     | UnitInterval           | List [I num, I denom]            |
+// | 12  | d (decentralization)    | NonNegativeInterval    | List [I num, I denom]            |
+// | 13  | extraEntropy            | Nonce                  | *** unsupported (errors) ***     |
+// | 14  | protocolVersion         | ProtVer                | NOT UPDATABLE in Conway          |
+// | 15  | minUTxOValue            | CompactForm Coin       | NOT UPDATABLE in Conway          |
+// | 16  | minPoolCost             | CompactForm Coin       | I (integer)                      |
+// | 17  | coinsPerUTxOByte        | CoinPerByte            | I (integer via CompactForm Coin) |
+// | 18  | costModels              | CostModels             | Map (see CostModels section)     |
+// | 19  | prices                  | Prices                 | List [List[n,d], List[n,d]]      |
+// | 20  | maxTxExUnits            | ExUnits                | List [I mem, I steps]            |
+// | 21  | maxBlockExUnits         | ExUnits                | List [I mem, I steps]            |
+// | 22  | maxValSize              | Word32                 | I (integer)                      |
+// | 23  | collateralPercentage    | Word16                 | I (integer)                      |
+// | 24  | maxCollateralInputs     | Word16                 | I (integer)                      |
+// | 25  | poolVotingThresholds    | PoolVotingThresholds   | List [5 rationals]               |
+// | 26  | dRepVotingThresholds    | DRepVotingThresholds   | List [10 rationals]              |
+// | 27  | committeeMinSize        | Word16                 | I (integer)                      |
+// | 28  | committeeMaxTermLength  | EpochInterval          | I (integer)                      |
+// | 29  | govActionLifetime       | EpochInterval          | I (integer)                      |
+// | 30  | govActionDeposit        | CompactForm Coin       | I (integer)                      |
+// | 31  | dRepDeposit             | CompactForm Coin       | I (integer)                      |
+// | 32  | dRepActivity            | EpochInterval          | I (integer)                      |
+// | 33  | minFeeRefScriptCostPerByte | NonNegativeInterval | List [I num, I denom]            |
+//
+// Tags 0-24 are from pre-Conway eras; tags 25-33 are Conway-specific governance params.
+// Tags 12-15 are legacy and not updatable in Conway (but the tags are still reserved).
+//
+// ## CostModels Encoding (Tag 18) — DETAILED
+//
+// Reference: libs/cardano-ledger-core/src/Cardano/Ledger/Plutus/ToPlutusData.hs:94-98
+//            libs/cardano-ledger-core/src/Cardano/Ledger/Plutus/CostModels.hs:443-448
+//
+// CostModels uses a two-step encoding:
+//
+// Step 1: `flattenCostModels` converts CostModels → Map Word8 [Int64]
+//   - Merges valid and unknown cost models into one flat map
+//   - Keys: Word8 language tag (PlutusV1=0, PlutusV2=1, PlutusV3=2, ...)
+//   - Values: ordered list of cost model parameter values (Int64)
+//
+// ```haskell
+// flattenCostModels :: CostModels -> Map Word8 [Int64]
+// flattenCostModels (CostModels validCostModels unknownCostModels) =
+//   Map.foldrWithKey
+//     (\lang cm -> Map.insert (languageToWord8 lang) (cmValues cm))
+//     unknownCostModels
+//     validCostModels
+// ```
+//
+// Step 2: `toPlutusData` converts Map Word8 [Int64] → PlutusData Map
+//
+// ```haskell
+// instance ToPlutusData CostModels where
+//   toPlutusData costModels = toPlutusData $ fmap toInteger <$> flattenCostModels costModels
+// ```
+//
+// The resulting PlutusData structure:
+//   Map [
+//     (I 0, List [I v1, I v2, ..., I v166])    -- PlutusV1: 166 params
+//     (I 1, List [I v1, I v2, ..., I v175])    -- PlutusV2: 175 params
+//     (I 2, List [I v1, I v2, ..., I v297])    -- PlutusV3: 297 params (approx)
+//   ]
+//
+// Only languages present in the CostModels are included in the map.
+// Unknown/future language versions are preserved as-is (their Word8 key
+// may be > 2, but the encoding is identical).
+//
+// ## Rational Encoding (Tags 9-12, 19, 25-26, 33)
+//
+// All rational/interval types encode as List [I numerator, I denominator]:
+//
+// ```haskell
+// instance ToPlutusData Rational where
+//   toPlutusData (num :% denom) = List [I num, I denom]
+// ```
+//
+// UnitInterval, NonNegativeInterval, PositiveInterval all delegate via unboundRational.
+//
+// ## PoolVotingThresholds Encoding (Tag 25)
+//
+// ```haskell
+// instance ToPlutusData PoolVotingThresholds where
+//   toPlutusData x = P.List
+//     [ toPlutusData (pvtMotionNoConfidence x)       -- [num, denom]
+//     , toPlutusData (pvtCommitteeNormal x)          -- [num, denom]
+//     , toPlutusData (pvtCommitteeNoConfidence x)    -- [num, denom]
+//     , toPlutusData (pvtHardForkInitiation x)       -- [num, denom]
+//     , toPlutusData (pvtPPSecurityGroup x)          -- [num, denom]
+//     ]
+// ```
+//
+// ## DRepVotingThresholds Encoding (Tag 26)
+//
+// ```haskell
+// instance ToPlutusData DRepVotingThresholds where
+//   toPlutusData x = P.List
+//     [ toPlutusData (dvtMotionNoConfidence x)       -- [num, denom]
+//     , toPlutusData (dvtCommitteeNormal x)          -- [num, denom]
+//     , toPlutusData (dvtCommitteeNoConfidence x)    -- [num, denom]
+//     , toPlutusData (dvtUpdateToConstitution x)     -- [num, denom]
+//     , toPlutusData (dvtHardForkInitiation x)       -- [num, denom]
+//     , toPlutusData (dvtPPNetworkGroup x)           -- [num, denom]
+//     , toPlutusData (dvtPPEconomicGroup x)          -- [num, denom]
+//     , toPlutusData (dvtPPTechnicalGroup x)         -- [num, denom]
+//     , toPlutusData (dvtPPGovGroup x)               -- [num, denom]
+//     , toPlutusData (dvtTreasuryWithdrawal x)       -- [num, denom]
+//     ]
+// ```
+//
+// ## Prices Encoding (Tag 19)
+//
+// ```haskell
+// instance ToPlutusData Prices where
+//   toPlutusData p = List [toPlutusData (prMem p), toPlutusData (prSteps p)]
+// ```
+// Result: List [List [I memNum, I memDenom], List [I stepsNum, I stepsDenom]]
+//
+// ## ExUnits Encoding (Tags 20, 21)
+//
+// ```haskell
+// instance ToPlutusData ExUnits where
+//   toPlutusData (ExUnits a b) = List [toPlutusData a, toPlutusData b]
+// ```
+// Result: List [I mem, I steps]
+
+/// PV3.ChangedParameters — wraps a PlutusData encoding of PParamsUpdate
+///
+/// The inner data is a PlutusData Map of (Integer tag → PlutusData value)
+/// containing only the parameters that are actually being changed.
+///
+/// Reference: eras/conway/impl/src/Cardano/Ledger/Conway/TxInfo.hs:773-782
+#[derive(Debug, Clone)]
+pub struct ChangedParameters(pub PlutusData);
+
+/// Protocol parameter update — the Rust-side representation before PlutusData encoding.
+///
+/// Each field is Optional: only `Some` fields will appear in the PlutusData Map.
+/// The integer after each field name is the tag used as the Map key.
+///
+/// Reference: eras/conway/impl/src/Cardano/Ledger/Conway/PParams.hs:1265-1335
+#[derive(Debug, Clone, Default)]
+pub struct ProtocolParamUpdate {
+    // --- Pre-Conway params (tags 0-24) ---
+    pub tx_fee_per_byte: Option<u64>,           // tag 0  — CoinPerByte
+    pub tx_fee_fixed: Option<u64>,              // tag 1  — Coin
+    pub max_bb_size: Option<u32>,               // tag 2
+    pub max_tx_size: Option<u32>,               // tag 3
+    pub max_bh_size: Option<u16>,               // tag 4
+    pub key_deposit: Option<u64>,               // tag 5  — Coin
+    pub pool_deposit: Option<u64>,              // tag 6  — Coin
+    pub e_max: Option<u32>,                     // tag 7  — EpochInterval
+    pub n_opt: Option<u16>,                     // tag 8
+    pub a0: Option<Rational>,                   // tag 9  — NonNegativeInterval
+    pub rho: Option<Rational>,                  // tag 10 — UnitInterval
+    pub tau: Option<Rational>,                  // tag 11 — UnitInterval
+    // tag 12 (d/decentralization) — not updatable in Conway
+    // tag 13 (extraEntropy)       — not updatable in Conway
+    // tag 14 (protocolVersion)    — not updatable in Conway
+    // tag 15 (minUTxOValue)       — not updatable in Conway
+    pub min_pool_cost: Option<u64>,             // tag 16 — Coin
+    pub coins_per_utxo_byte: Option<u64>,       // tag 17 — CoinPerByte
+    pub cost_models: Option<CostModelsForPlutusData>, // tag 18 — see below
+    pub prices: Option<Prices>,                 // tag 19
+    pub max_tx_ex_units: Option<ExUnits>,       // tag 20
+    pub max_block_ex_units: Option<ExUnits>,    // tag 21
+    pub max_val_size: Option<u32>,              // tag 22
+    pub collateral_percentage: Option<u16>,     // tag 23
+    pub max_collateral_inputs: Option<u16>,     // tag 24
+
+    // --- Conway-specific governance params (tags 25-33) ---
+    pub pool_voting_thresholds: Option<PoolVotingThresholds>,   // tag 25
+    pub drep_voting_thresholds: Option<DRepVotingThresholds>,   // tag 26
+    pub committee_min_size: Option<u16>,        // tag 27
+    pub committee_max_term_length: Option<u32>, // tag 28 — EpochInterval
+    pub gov_action_lifetime: Option<u32>,       // tag 29 — EpochInterval
+    pub gov_action_deposit: Option<u64>,        // tag 30 — Coin
+    pub drep_deposit: Option<u64>,              // tag 31 — Coin
+    pub drep_activity: Option<u32>,             // tag 32 — EpochInterval
+    pub min_fee_ref_script_cost_per_byte: Option<Rational>, // tag 33 — NonNegativeInterval
+}
+
+/// Rational number as (numerator, denominator) pair.
+///
+/// PlutusData encoding: List [I numerator, I denominator]
+///
+/// ```haskell
+/// instance ToPlutusData Rational where
+///   toPlutusData (num :% denom) = List [I num, I denom]
+/// ```
+#[derive(Debug, Clone)]
+pub struct Rational {
+    pub numerator: i64,
+    pub denominator: i64,
+}
+
+/// Prices for Plutus script execution (memory and steps).
+///
+/// PlutusData encoding: List [List [I memNum, I memDenom], List [I stepsNum, I stepsDenom]]
+///
+/// ```haskell
+/// instance ToPlutusData Prices where
+///   toPlutusData p = List [toPlutusData (prMem p), toPlutusData (prSteps p)]
+/// ```
+#[derive(Debug, Clone)]
+pub struct Prices {
+    pub mem: Rational,
+    pub steps: Rational,
+}
+
+/// Pool voting thresholds — 5 UnitInterval values.
+///
+/// PlutusData encoding: List [5 × List [I num, I denom]]
+///
+/// Order: motionNoConfidence, committeeNormal, committeeNoConfidence,
+///        hardForkInitiation, ppSecurityGroup
+#[derive(Debug, Clone)]
+pub struct PoolVotingThresholds {
+    pub motion_no_confidence: Rational,
+    pub committee_normal: Rational,
+    pub committee_no_confidence: Rational,
+    pub hard_fork_initiation: Rational,
+    pub pp_security_group: Rational,
+}
+
+/// DRep voting thresholds — 10 UnitInterval values.
+///
+/// PlutusData encoding: List [10 × List [I num, I denom]]
+///
+/// Order: motionNoConfidence, committeeNormal, committeeNoConfidence,
+///        updateToConstitution, hardForkInitiation, ppNetworkGroup,
+///        ppEconomicGroup, ppTechnicalGroup, ppGovGroup, treasuryWithdrawal
+#[derive(Debug, Clone)]
+pub struct DRepVotingThresholds {
+    pub motion_no_confidence: Rational,
+    pub committee_normal: Rational,
+    pub committee_no_confidence: Rational,
+    pub update_to_constitution: Rational,
+    pub hard_fork_initiation: Rational,
+    pub pp_network_group: Rational,
+    pub pp_economic_group: Rational,
+    pub pp_technical_group: Rational,
+    pub pp_gov_group: Rational,
+    pub treasury_withdrawal: Rational,
+}
+
+/// CostModels ready for PlutusData encoding.
+///
+/// PlutusData encoding (tag 18):
+///   Map [
+///     (I 0, List [I v1, I v2, ..., I v166])    -- PlutusV1 (166 params)
+///     (I 1, List [I v1, I v2, ..., I v175])    -- PlutusV2 (175 params)
+///     (I 2, List [I v1, I v2, ..., I v297])    -- PlutusV3 (~297 params)
+///   ]
+///
+/// The encoding pipeline in Haskell:
+///   1. `flattenCostModels` merges valid + unknown models → Map Word8 [Int64]
+///      (keys: language tag, values: ordered parameter list)
+///   2. `toPlutusData` maps `fmap toInteger` over values, then encodes as PlutusData Map
+///
+/// ```haskell
+/// instance ToPlutusData CostModels where
+///   toPlutusData costModels = toPlutusData $ fmap toInteger <$> flattenCostModels costModels
+///
+/// flattenCostModels :: CostModels -> Map Word8 [Int64]
+/// flattenCostModels (CostModels validCostModels unknownCostModels) =
+///   Map.foldrWithKey
+///     (\lang cm -> Map.insert (languageToWord8 lang) (cmValues cm))
+///     unknownCostModels
+///     validCostModels
+/// ```
+///
+/// Language tags: PlutusV1=0, PlutusV2=1, PlutusV3=2
+/// Unknown/future languages use their raw Word8 key and are preserved as-is.
+#[derive(Debug, Clone)]
+pub struct CostModelsForPlutusData {
+    /// Map from language tag (0=PlutusV1, 1=PlutusV2, 2=PlutusV3, ...) to cost model params
+    pub models: BTreeMap<u8, Vec<i64>>,
+}
 
 // ---------------------------------------------------------------------------
 // 3b-impl. Building TxInfo from LedgerTxInfo
